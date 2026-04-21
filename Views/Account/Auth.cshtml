@@ -1,0 +1,108 @@
+@{
+    Layout = "_AuthLayout";
+    ViewData["Title"] = "3D Studio - Auth";
+}
+
+<div class="split-layout">
+    <section class="canvas-zone" aria-label="3D showcase area">
+        <div class="brand-block">
+            <div class="brand-logo">3D<span>PAINT</span></div>
+            <p class="brand-hint">Первая интерактивная платформа для 3D-раскраски</p>
+        </div>
+
+        <div class="hero-text">
+            <h1 id="dynamic-title">С возвращением в Студию</h1>
+            <p id="dynamic-subtitle">Открой проекты, ассеты и рабочие сцены за пару секунд.</p>
+        </div>
+    </section>
+
+    <section class="form-zone">
+        <div class="form-zone-lighting" aria-hidden="true">
+            <div class="neon-lamp purple"></div>
+            <div class="neon-lamp cyan"></div>
+        </div>
+
+        <div class="glass-card" id="authBox">
+
+            <div class="toggle-container" role="tablist" aria-label="Auth mode switch">
+                <div class="toggle-pill" id="togglePill"></div>
+                <button type="button" class="toggle-btn active" data-mode="login" onclick="switchTab('login')">Вход</button>
+                <button type="button" class="toggle-btn" data-mode="register" onclick="switchTab('register')">Регистрация</button>
+            </div>
+
+            <div class="forms-wrapper" id="formsWrapper">
+                <form id="loginForm" class="auth-form active" novalidate>
+                    <div class="input-group">
+                        <span class="input-icon">✉</span>
+                        <input type="email" name="Login" required autocomplete="email" placeholder=" ">
+                        <label>Email</label>
+                    </div>
+
+                    <div class="input-group">
+                        <span class="input-icon">🔒</span>
+                        <input type="password" name="Password" required minlength="6" placeholder=" ">
+                        <label>Пароль</label>
+                    </div>
+
+                    <div class="form-options">
+                        <a href="#" class="forgot-link">Забыли пароль?</a>
+                    </div>
+
+                    <button type="submit" class="btn-glow purple submit-btn">
+                        <span class="btn-text">Войти</span>
+                        <span class="btn-loader" aria-hidden="true"></span>
+                    </button>
+
+                    <div class="social-divider"><span>Или войдите через</span></div>
+                    <div class="social-grid">
+                        <button type="button" class="social-btn" aria-label="Google">G</button>
+                        <button type="button" class="social-btn" aria-label="GitHub">GH</button>
+                        <button type="button" class="social-btn" aria-label="Discord">D</button>
+                    </div>
+                </form>
+
+                <form id="registerForm" class="auth-form hidden" novalidate>
+                    <div class="input-group">
+                        <span class="input-icon">👤</span>
+                        <input type="text" name="FullName" required autocomplete="name" placeholder=" ">
+                        <label>ФИО</label>
+                    </div>
+
+                    <div class="input-group">
+                        <span class="input-icon">📅</span>
+                        <input type="text" name="BirthDate" id="regBirthDate"
+                               onfocus="this.type='date'"
+                               onblur="if(!this.value){ this.type='text'; }"
+                               required autocomplete="bday" placeholder=" ">
+                        <label>Дата рождения</label>
+                        <span class="date-ghost">дд.мм.гггг</span>
+                    </div>
+
+                    <div class="input-group">
+                        <span class="input-icon">✉</span>
+                        <input type="text" name="Login" required autocomplete="username" placeholder=" ">
+                        <label>Логин</label>
+                    </div>
+
+                    <div class="input-group">
+                        <span class="input-icon">🔐</span>
+                        <input type="password" name="Password" id="regPassword" required minlength="6" placeholder=" ">
+                        <label>Пароль</label>
+                    </div>
+
+                    <button type="submit" class="btn-glow cyan submit-btn">
+                        <span class="btn-text">Создать аккаунт</span>
+                        <span class="btn-loader" aria-hidden="true"></span>
+                    </button>
+                </form>
+            </div>
+
+            <p class="status-message" id="statusMessage" aria-live="polite"></p>
+        </div>
+    </section>
+</div>
+
+@section Scripts {
+    <script type="module" src="@Url.Content("~/js/auth-visuals.js")"></script>
+    <script src="~/js/auth-logic.js"></script>
+}

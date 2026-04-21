@@ -1,0 +1,80 @@
+@{
+    Layout = "_HomeLayout";
+    ViewData["Title"] = "3D Studio - Main";
+}
+<div class="app-shell" id="appShell">
+    <aside class="sidebar glass-panel" id="sidebar">
+        <button class="sidebar-toggle" id="sidebarToggle" aria-label="Toggle sidebar">☰</button>
+
+        <section class="profile-block">
+            <div class="avatar-wrap">
+                <img src="https://placehold.co/84x84/png" alt="Avatar" class="avatar" />
+                <span class="status-dot" title="Online"></span>
+            </div>
+            <div class="profile-meta">
+                <h2>Алексей С.</h2>
+                <p>User dashboard</p>
+            </div>
+        </section>
+
+        <nav class="sidebar-nav">
+            <button class="nav-item active">Моя библиотека</button>
+            <button class="nav-item">Избранное</button>
+            <button class="nav-item">Общие проекты</button>
+            <button class="nav-item">Мастерская раскраски</button>
+        </nav>
+
+        <section class="order-tracker glass-inset">
+            <div>
+                <p>Активные заказы 3D-печати</p>
+                <strong id="activeOrders">07</strong>
+            </div>
+            <span class="tracker-pulse"></span>
+        </section>
+    </aside>
+
+    <main class="main-content">
+        <header class="topbar glass-panel">
+            <div>
+                <h1>Premium Dark Asset Hub</h1>
+                <p>Ваши 3D-файлы с безопасной загрузкой в MinIO</p>
+            </div>
+            <div class="topbar-actions">
+                <button class="btn btn-secondary" id="uploadOpenBtn">Загрузить файлы</button>
+                <button class="btn btn-primary">Перейти в модуль покраски</button>
+                <button class="btn btn-primary">Перейти в модуль заказа</button>
+            </div>
+        </header>
+
+        <section class="asset-grid" id="assetGrid" aria-label="3D asset grid"></section>
+    </main>
+</div>
+
+<div class="upload-drawer" id="uploadDrawer" aria-hidden="true">
+    <div class="upload-sheet glass-panel">
+        <div class="upload-head">
+            <h2>Upload Panel</h2>
+            <button id="uploadCloseBtn" class="btn-close" aria-label="Close">✕</button>
+        </div>
+
+        <section class="pipeline glass-panel hidden" id="uploadPipeline" aria-live="polite">
+            <h2>Pipeline Visualization</h2>
+            <div class="pipeline-flow">
+                <div class="pipeline-step" data-step="upload">Загрузка</div>
+                <div class="pipeline-step" data-step="analysis">Анализ геометрии</div>
+                <div class="pipeline-step" data-step="preview">Генерация превью</div>
+            </div>
+            <div class="progress-shimmer" aria-hidden="true"></div>
+        </section>
+
+        <label class="drop-zone" id="dropZone" for="uploadInput">
+            <p>Перетащите STL / OBJ / STEP / GLB файлы сюда</p>
+            <small>Максимум 500 MB.</small>
+            <input id="uploadInput" type="file" accept=".stl,.obj,.step,.stp,.glb" hidden />
+        </label>
+
+        <div class="validation-list" id="validationList"></div>
+    </div>
+</div>
+
+<script type="module" src="~/js/home-dashboard.js" asp-append-version="true"></script>
