@@ -35,21 +35,17 @@ public class FileStorageService : IFileStorageService
 
     public async Task<UserFile> UploadFileAsync(int userId, IFormFile file, CancellationToken cancellationToken = default)
     {
-        // 1. Начало процесса
         _logger.LogInformation(">>> [UPLOAD START] User: {UserId}, FileName: {FileName}, Size: {FileSize} bytes",
             userId, file.FileName, file.Length);
 
         try
         {
-            // 2. Валидация
             _logger.LogDebug("Validating file: {FileName}", file.FileName);
             ValidateFile(file);
 
-            // 3. Работа с бакетом
             _logger.LogDebug("Checking if bucket '{Bucket}' exists...", _options.BucketName);
-            //await EnsureBucketExistsAsync(cancellationToken);
+            await EnsureBucketExistsAsync(cancellationToken);
 
-            // 4. Подготовка путей
             var uniqueName = await GetUniqueFileNameAsync(userId, file.FileName, cancellationToken);
             var fileId = Guid.NewGuid();
             var extension = Path.GetExtension(uniqueName);
@@ -57,7 +53,6 @@ public class FileStorageService : IFileStorageService
 
             _logger.LogInformation(">>> [MINIO] Uploading stream to path: {StoragePath}", storagePath);
 
-            // 5. Загрузка в MinIO
             var sw = System.Diagnostics.Stopwatch.StartNew();
             await using (var stream = file.OpenReadStream())
             {
@@ -73,12 +68,10 @@ public class FileStorageService : IFileStorageService
             sw.Stop();
             _logger.LogInformation(">>> [MINIO] Upload finished in {ElapsedMs}ms. Path: {StoragePath}", sw.ElapsedMilliseconds, storagePath);
 
-            // 6. Генерация превью (может быть тяжелой операцией)
             _logger.LogInformation(">>> [THUMBNAIL] Creating thumbnail for {FileId}...", fileId);
             var thumbnailPath = await CreateAndUploadThumbnailAsync(userId, fileId, uniqueName, cancellationToken);
             _logger.LogDebug("Thumbnail uploaded to: {ThumbnailPath}", thumbnailPath);
 
-            // 7. Сохранение в БД
             var userFile = new UserFile
             {
                 id = fileId,
