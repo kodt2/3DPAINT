@@ -15,7 +15,7 @@
 * **Система сегментации для раскраски по номерам**: В разработе.
 * **Современный UI**: Адаптивный стеклянный интерфейс (Glassmorphism) с динамической сменой контента без перезагрузки страницы.
 
-## 🛠 Технологический стек
+## Технологический стек
 * **Frontend**: Three.js, JavaScript (ES6+), CSS3 (Custom Properties & Animations).
 * **Backend**: C# (ASP.NET Core), Entity Framework.
 * **DevOps & Infrastructure**: 
