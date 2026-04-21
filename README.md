@@ -28,6 +28,6 @@
 Проект подготовлен для быстрого развертывания через Docker:
 
 ```bash
-git clone [https://github.com/kodt2/3DPAINT.git](https://github.com/kodt2/3DPAINT.git)
+git clone https://github.com/kodt2/3DPAINT.git
 cd 3DPAINT
 docker-compose up -d --build
