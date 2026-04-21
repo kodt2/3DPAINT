@@ -15,21 +15,17 @@ namespace LoginAndReg.Controllers
             _accountService = accountService;
         }
 
-        // 1. Единая точка входа для всей страницы авторизации (и входа, и регистрации)
         [HttpGet]
         public IActionResult Auth()
         {
-            // Убедись, что файл называется Views/Account/Auth.cshtml
             return View();
         }
 
-        // 2. POST теперь возвращает JSON, принимая данные формы ([FromForm])
         [HttpPost]
         public async Task<IActionResult> Login([FromForm] LoginViewModel model)
         {
             if (!ModelState.IsValid)
             {
-                // Собираем все ошибки валидации в массив
                 var errors = ModelState.Values.SelectMany(v => v.Errors).Select(e => e.ErrorMessage);
                 return BadRequest(new { success = false, errors });
             }
@@ -43,7 +39,6 @@ namespace LoginAndReg.Controllers
             var token = _jwtService.GenerateToken(user.login);
             Response.Cookies.Append("jwt", token, new CookieOptions { HttpOnly = true, Secure = true });
 
-            // Возвращаем успех и URL для перехода, чтобы JS сам сделал редирект после красивой анимации
             return Ok(new { success = true, redirectUrl = Url.Action("Index", "Home") });
         }
 
