@@ -61,3 +61,16 @@
 #*.PDF   diff=astextplain
 #*.rtf   diff=astextplain
 #*.RTF   diff=astextplain
+
+###############################################################################
+# 3DPAINT: binary assets (keep git from touching them)
+###############################################################################
+*.glb   binary
+*.gltf  binary
+*.obj   binary
+*.stl   binary
+*.ply   binary
+*.png   binary
+*.webp  binary
+*.jpg   binary
+*.jpeg  binary
