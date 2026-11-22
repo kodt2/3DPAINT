@@ -1,0 +1,10 @@
+# Dev-only additions on top of infra/compose.yml.
+# `docker compose` in a dev checkout picks this file up automatically
+# (the Makefile passes both files explicitly). Production-like runs use
+# infra/compose.yml only.
+#
+# Currently there are no dev overrides: the base file already matches the
+# previous root docker-compose.yml behavior. Add dev-only services, ports
+# or environment here (e.g. a local OpenTelemetry collector).
+
+services: {}
