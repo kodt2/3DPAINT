@@ -8,6 +8,7 @@ public class MinioOptions
     public string AccessKey { get; set; } = string.Empty;
     public string SecretKey { get; set; } = string.Empty;
     public string BucketName { get; set; } = "user-data";
+    public string Region { get; set; } = string.Empty;
     public bool UseSsl { get; set; }
     public int PresignedUrlExpiryMinutes { get; set; } = 30;
 }

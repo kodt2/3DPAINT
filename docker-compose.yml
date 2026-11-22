@@ -1,11 +1,11 @@
-﻿version: '3.8'
-
 services:
   web:
     build: .
     container_name: login_reg_web
+    # The app migrates the DB on startup; restart until PostgreSQL is ready.
+    restart: unless-stopped
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:${WEB_PORT:-8080}:8080"
     environment:
       - ASPNETCORE_ENVIRONMENT=Production
       - ConnectionStrings__DefaultConnection=Host=login_reg_db;Port=5432;Database=${DB_NAME};Username=${DB_USER};Password=${DB_PASSWORD}
@@ -17,6 +17,7 @@ services:
       - Minio__AccessKey=${MINIO_ROOT_USER}
       - Minio__SecretKey=${MINIO_ROOT_PASSWORD}
       - Minio__BucketName=${MINIO_BUCKET}
+      - Minio__Region=${MINIO_REGION}
       - Minio__UseSsl=false
     depends_on:
       - db
@@ -37,15 +38,14 @@ services:
       - app-network
 
   storage:
-    image: minio/minio
-    container_name: login_reg_minio
-    command: server /data --console-address ":9001"
+    # S3-compatible object storage (SeaweedFS in dev, ADR 0009).
+    # S3 API listens on 9000, Filer UI on 8888.
+    image: chrislusf/seaweedfs:4.54
+    container_name: login_reg_storage
+    command: server -s3 -s3.port=9000 -dir=/data
     ports:
       - "127.0.0.1:9000:9000"
-      - "127.0.0.1:9001:9001"
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      - "127.0.0.1:8888:8888"
     volumes:
       - miniodata:/data
     networks:

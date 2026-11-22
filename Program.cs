@@ -55,12 +55,19 @@ builder.Services.Configure<FormOptions>(options =>
 });
 builder.Services.AddSingleton<IMinioClient>(_ =>
 {
-    return new MinioClient()
-        .WithEndpoint(builder.Configuration["Minio:Endpoint"])
-        .WithCredentials(builder.Configuration["Minio:AccessKey"], builder.Configuration["Minio:SecretKey"])
-        .WithSSL(builder.Configuration.GetValue<bool>("Minio:UseSsl"))
-        .WithHttpClient(new HttpClient(new HttpClientHandler()) { DefaultRequestVersion = System.Net.HttpVersion.Version11 })
-        .Build();
+    var client = new MinioClient()
+        .WithEndpoint(minioOptions.Endpoint)
+        .WithCredentials(minioOptions.AccessKey, minioOptions.SecretKey)
+        .WithSSL(minioOptions.UseSsl)
+        .WithHttpClient(new HttpClient(new HttpClientHandler()) { DefaultRequestVersion = System.Net.HttpVersion.Version11 });
+
+    // Region is optional: not every S3-compatible storage requires it (ADR 0009).
+    if (!string.IsNullOrWhiteSpace(minioOptions.Region))
+    {
+        client = client.WithRegion(minioOptions.Region);
+    }
+
+    return client.Build();
 });
 
 builder.Services.AddControllersWithViews();
