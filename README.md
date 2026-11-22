@@ -28,12 +28,17 @@
 
 ```
 ├── legacy/monolith/   # рабочее монолитное приложение (ASP.NET Core MVC)
+├── services/gateway/  # Gateway (ASP.NET Core + YARP): единственный публичный вход
 ├── infra/             # Docker Compose (dev-стек)
 ├── docs/              # документация, ADR (docs/adr/)
 ├── contracts/         # контракты событий (с Фазы 2)
 ├── AGENTS.md          # инструкции для ИИ-агентов (не в git, локально)
 └── Makefile           # up / down / logs / build / test
 ```
+
+Весь трафик идёт через Gateway на порту `${WEB_PORT:-8080}` (`127.0.0.1`);
+порт монолита наружу не публикуется. Health-эндпоинты Gateway:
+`/health/live`, `/health/ready` (готовность = монолит доступен).
 
 Целевая архитектура и план миграции на микросервисы описаны в `ARCHITECTURE.md`
 и `IMPLEMENTATION_PLAN.md` (удерживаются локально, в git не коммитятся).
