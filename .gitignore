@@ -364,3 +364,7 @@ FodyWeavers.xsd
 
 #Enviroment
 .env
+
+AGENTS.md
+ARCHITECTURE.md
+IMPLEMENTATION_PLAN.md

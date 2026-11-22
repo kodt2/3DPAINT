@@ -1,6 +1,10 @@
+# 3DPAINT dev stack.
+# Environment variables are read from .env in the repository root
+# (run `docker compose` from the repo root; see .env.example).
 services:
   web:
-    build: .
+    build:
+      context: ../legacy/monolith
     container_name: login_reg_web
     # The app migrates the DB on startup; restart until PostgreSQL is ready.
     restart: unless-stopped
