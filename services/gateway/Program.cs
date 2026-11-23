@@ -145,6 +145,11 @@ app.UseSerilogRequestLogging();
 // In dev the gateway is the edge; trust forwarded headers from the browser/proxy chain.
 app.UseForwardedHeaders();
 
+// CSRF protection for state-changing /api/** requests: the Origin (or Referer)
+// must match the gateway's public origin (PUBLIC_ORIGIN, ADR 0011). Must run
+// before the reverse proxy so rejected requests never reach the monolith.
+app.UseMiddleware<OriginCheckMiddleware>();
+
 // Liveness must not depend on the upstream: run no checks, always healthy while the process is up.
 app.MapHealthChecks("/health/live", new HealthCheckOptions { Predicate = _ => false });
 app.MapHealthChecks(

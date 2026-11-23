@@ -183,8 +183,162 @@ public sealed class GatewayTests : IDisposable
                 builder.UseSetting("Upstream:Frontend", frontendAddress);
             });
 
-    private sealed class TestAppFactory : WebApplicationFactory<Program>
+    public void Dispose() => _upstream.Dispose();
+}
+
+internal sealed class TestAppFactory : WebApplicationFactory<Program>
+{
+}
+
+public sealed class OriginCheckTests : IDisposable
+{
+    private const string PublicOrigin = "http://allowed.example";
+
+    private readonly StubUpstream _upstream = new("monolith");
+
+    private static WebApplicationFactory<Program> CreateFactory(string upstreamAddress, params (string Key, string Value)[] settings)
     {
+        var factory = new TestAppFactory();
+        return factory.WithWebHostBuilder(builder =>
+        {
+            // The default public origin derives from WEB_PORT; pin it so tests
+            // do not depend on the host environment.
+            builder.UseSetting("WEB_PORT", "8080");
+            builder.UseSetting("Upstream:Monolith", upstreamAddress);
+            builder.UseSetting("Upstream:Frontend", "http://127.0.0.1:1");
+            foreach (var (key, value) in settings)
+            {
+                builder.UseSetting(key, value);
+            }
+        });
+    }
+
+    private static HttpRequestMessage Mutation(HttpMethod method, string path)
+    {
+        // StringContent sets Content-Type itself; the Origin/Referer headers are
+        // added per test.
+        var request = new HttpRequestMessage(method, path);
+        request.Content = new StringContent("{}", System.Text.Encoding.UTF8, "application/json");
+        return request;
+    }
+
+    [Fact]
+    public async Task Post_api_with_matching_origin_reaches_upstream()
+    {
+        using var factory = CreateFactory(_upstream.Url, ("PublicOrigin", PublicOrigin));
+        var client = factory.CreateClient();
+
+        var request = Mutation(HttpMethod.Post, "/api/models");
+        request.Headers.Add("Origin", PublicOrigin);
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("/api/models", _upstream.LastRequestPath);
+    }
+
+    [Fact]
+    public async Task Post_api_with_foreign_origin_returns_403_problem_details()
+    {
+        using var factory = CreateFactory(_upstream.Url, ("PublicOrigin", PublicOrigin));
+        var client = factory.CreateClient();
+
+        var request = Mutation(HttpMethod.Post, "/api/models");
+        request.Headers.Add("Origin", "http://evil.example");
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("\"status\":403", body);
+        Assert.Contains("\"title\":\"Forbidden\"", body);
+        // The request must not have reached the upstream.
+        Assert.Null(_upstream.LastRequestPath);
+    }
+
+    [Fact]
+    public async Task Post_api_without_origin_or_referer_returns_403()
+    {
+        using var factory = CreateFactory(_upstream.Url, ("PublicOrigin", PublicOrigin));
+        var client = factory.CreateClient();
+
+        using var response = await client.SendAsync(Mutation(HttpMethod.Post, "/api/models"));
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Null(_upstream.LastRequestPath);
+    }
+
+    [Fact]
+    public async Task Post_api_without_origin_but_matching_referer_reaches_upstream()
+    {
+        using var factory = CreateFactory(_upstream.Url, ("PublicOrigin", PublicOrigin));
+        var client = factory.CreateClient();
+
+        var request = Mutation(HttpMethod.Post, "/api/models");
+        request.Headers.Add("Referer", $"{PublicOrigin}/spa/login");
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("/api/models", _upstream.LastRequestPath);
+    }
+
+    [Theory]
+    [InlineData("GET")]
+    [InlineData("HEAD")]
+    [InlineData("OPTIONS")]
+    public async Task Read_methods_without_origin_reach_upstream(string method)
+    {
+        using var factory = CreateFactory(_upstream.Url, ("PublicOrigin", PublicOrigin));
+        var client = factory.CreateClient();
+
+        using var response = await client.SendAsync(new HttpRequestMessage(new HttpMethod(method), "/api/files"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("/api/files", _upstream.LastRequestPath);
+    }
+
+    [Fact]
+    public async Task Delete_api_with_foreign_origin_returns_403()
+    {
+        using var factory = CreateFactory(_upstream.Url, ("PublicOrigin", PublicOrigin));
+        var client = factory.CreateClient();
+
+        var request = Mutation(HttpMethod.Delete, "/api/models/123");
+        request.Headers.Add("Origin", "http://evil.example");
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Null(_upstream.LastRequestPath);
+    }
+
+    [Fact]
+    public async Task Non_api_mutation_without_origin_reaches_upstream()
+    {
+        using var factory = CreateFactory(_upstream.Url, ("PublicOrigin", PublicOrigin));
+        var client = factory.CreateClient();
+
+        // The Razor pages stay on their own routes and keep form posts working.
+        using var response = await client.SendAsync(Mutation(HttpMethod.Post, "/Account/Login"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("/Account/Login", _upstream.LastRequestPath);
+    }
+
+    [Fact]
+    public async Task Default_public_origin_uses_web_port()
+    {
+        // No PublicOrigin setting: the default is http://localhost:{WEB_PORT}.
+        using var factory = CreateFactory(_upstream.Url);
+        var client = factory.CreateClient();
+
+        var allowed = Mutation(HttpMethod.Post, "/api/models");
+        allowed.Headers.Add("Origin", "http://localhost:8080");
+        using var allowedResponse = await client.SendAsync(allowed);
+        Assert.Equal(HttpStatusCode.OK, allowedResponse.StatusCode);
+
+        var foreign = Mutation(HttpMethod.Post, "/api/models");
+        foreign.Headers.Add("Origin", "http://localhost:9999");
+        using var foreignResponse = await client.SendAsync(foreign);
+        Assert.Equal(HttpStatusCode.Forbidden, foreignResponse.StatusCode);
     }
 
     public void Dispose() => _upstream.Dispose();
