@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc.Controllers;
+using Microsoft.AspNetCore.Mvc.ModelBinding;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Extensions;
 using Microsoft.AspNetCore.Http.Features;
@@ -14,6 +15,7 @@ using Microsoft.IdentityModel.Tokens;
 using Minio;
 using Npgsql;
 using System.Text;
+using System.Text.Json;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -177,21 +179,129 @@ app.UseStaticFiles(new StaticFileOptions
 });
 
 // OpenAPI document for the SPA client (`npm run gen:api` in frontend/).
-// Enabled by default in Development and via OpenApi:Enabled=true (dev compose
-// stack: the monolith is only reachable through the gateway). The Swagger UI
-// stays dev-only.
-if (app.Configuration.GetValue("OpenApi:Enabled", app.Environment.IsDevelopment()))
+// Served only when ASPNETCORE_ENVIRONMENT=Development (local dev stacks set it
+// via infra/.env); production-like stacks answer 404 for /swagger/**.
+// The Swagger UI is Development-only as well.
+if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
-    if (app.Environment.IsDevelopment())
-    {
-        app.UseSwaggerUI();
-    }
+    app.UseSwaggerUI();
 }
 
 app.UseRouting();
 
+// JSON API hardening (step 3b.0, ADR 0011 «CSRF-защита»): a state-changing
+// /api/** request that carries a body must send application/json, unless the
+// endpoint accepts a form (multipart upload). Browsers cannot submit JSON from
+// a cross-site <form>, so this blocks forged cross-site form POSTs in addition
+// to the gateway Origin check. Bodyless mutations (logout, delete-by-id) and
+// non-/api routes keep working as before.
+app.Use(async (context, next) =>
+{
+    if (!RequiresJsonContentType(context))
+    {
+        await next();
+        return;
+    }
+
+    await WriteProblemDetailsAsync(
+        context,
+        StatusCodes.Status415UnsupportedMediaType,
+        "Unsupported Media Type",
+        "JSON API endpoints accept only 'Content-Type: application/json'.");
+});
+
 app.UseAuthentication();
+
+// True for state-changing /api/** requests with a body that target a JSON
+// endpoint and do not send application/json (see the middleware above).
+static bool RequiresJsonContentType(HttpContext context)
+{
+    var request = context.Request;
+    if (!request.Path.StartsWithSegments("/api"))
+    {
+        return false;
+    }
+
+    var method = request.Method;
+    if (!HttpMethods.IsPost(method) && !HttpMethods.IsPut(method)
+        && !HttpMethods.IsPatch(method) && !HttpMethods.IsDelete(method))
+    {
+        return false;
+    }
+
+    if (!HasBody(request))
+    {
+        return false;
+    }
+
+    if (AcceptsForm(context.GetEndpoint()))
+    {
+        return false;
+    }
+
+    return !HasApplicationJsonContentType(request);
+}
+
+// RFC 7807 JSON with the canonical lower-case field names.
+// WriteAsync (not WriteAsJsonAsync): the latter replaces the Content-Type
+// with application/json and would drop the application/problem+json media type.
+static async Task WriteProblemDetailsAsync(HttpContext context, int statusCode, string title, string detail)
+{
+    context.Response.Clear();
+    context.Response.StatusCode = statusCode;
+    context.Response.ContentType = "application/problem+json; charset=utf-8";
+
+    var problem = new
+    {
+        type = "https://httpwg.org/specs/rfc7807#about-blank",
+        title,
+        status = statusCode,
+        detail,
+    };
+    var json = JsonSerializer.Serialize(problem, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+    await context.Response.WriteAsync(json, Encoding.UTF8);
+}
+
+static bool HasBody(HttpRequest request)
+    => request.ContentLength > 0
+       || request.Headers.TransferEncoding.Any(v => string.Equals(v, "chunked", StringComparison.OrdinalIgnoreCase));
+
+static bool AcceptsForm(Endpoint? endpoint)
+{
+    if (endpoint?.Metadata.GetMetadata<ControllerActionDescriptor>() is not { } action)
+    {
+        return false;
+    }
+
+    // The binding source is the stable signal for form (multipart) parameters.
+    // In .NET 8 BindingSource is a class of singleton instances, so compare
+    // with Equals rather than an `is` constant pattern.
+    foreach (var parameter in action.Parameters)
+    {
+        var bindingSource = parameter.BindingInfo?.BindingSource;
+        if (bindingSource is not null
+            && (bindingSource.Equals(BindingSource.Form)
+                || bindingSource.Equals(BindingSource.FormFile)))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool HasApplicationJsonContentType(HttpRequest request)
+{
+    var contentType = request.ContentType;
+    if (string.IsNullOrWhiteSpace(contentType))
+    {
+        return false;
+    }
+
+    var mediaRange = contentType.Split(';', 2)[0].Trim();
+    return mediaRange.Equals("application/json", StringComparison.OrdinalIgnoreCase);
+}
 
 // True when the endpoint carries [Authorize] without an [AllowAnonymous] override.
 static bool RequiresAuthorization(HttpContext context)
