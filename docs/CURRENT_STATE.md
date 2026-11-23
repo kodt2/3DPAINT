@@ -74,6 +74,8 @@
 - `UseHttpsRedirection()` подключён, но HTTPS-эндпоинт не опубликован — фактически ничего не делает (в проде TLS режет внешний nginx, конфига которого **нет в репозитории**, см. README).
 - В режиме `Production` обработчик исключений указывает на `/Home/Error`, **которого не существует** (нет такого action в `HomeController`) → необработанное исключение = 500 с пустым телом (TD-5).
 - CORS в коде не настроен; rate-limiting отсутствует.
+- (с шага 3b.0) Middleware монолита: state-changing запрос (`POST/PUT/PATCH/DELETE`) на `/api/**` **с телом** обязан приходить с `Content-Type: application/json`, иначе `415` (ProblemDetails). Исключение — эндпоинты с form-параметрами (`POST /api/files/upload`); мутации без тела не проверяются (см. ADR 0011 §6).
+- (с шага 3b.0) OpenAPI (`/swagger/**`) отдаётся **только при `ASPNETCORE_ENVIRONMENT=Development`**; в Production-подобных стэках — `404`. Dev-стэк задаёт окружение через `infra/.env` (`ASPNETCORE_ENVIRONMENT=Development`); настройка `OpenApi:Enabled` удалена.
 
 ## 4. Механизм аутентификации
 
@@ -187,6 +189,10 @@
 - [ ] (по мере фаз) health-эндпоинты сервисов → 200.
 - [ ] (с шага 3a) `GET /spa/` → SPA (title `3DPAINT`); deep-link `GET /spa/любой/путь` → 200 (SPA-fallback).
 - [ ] (с шага 3a) `GET /api/health` → 200 JSON; `GET /api/me` без cookie → 401 **JSON**; с cookie → 200.
+- [ ] (с шага 3b.0) `POST /api/**` с `Origin` чужого сайта / без `Origin` → **403** `application/problem+json` (проверка на Gateway, до монолита).
+- [ ] (с шага 3b.0) `POST /api/**` с телом и `Content-Type: text/plain` (при правильном `Origin`) → **415**; `POST /api/files/upload` multipart — не 415.
+- [ ] (с шага 3b.0) `GET /swagger/v1/swagger.json` в dev-стэке → 200; в Production-подобном → 404.
+- [ ] (с шага 3b.0) Razor-формы работают как раньше (логин/регистрация через `/Account/Auth`), т.к. Origin-проверка не трогает не-`/api` пути.
 
 ## 11. Инвентарь экранов (составлен 2026-11-23, шаг 3a; субагент + сверка главным агентом)
 
@@ -228,6 +234,6 @@ Layout'ы: `_HomeLayout` (только Google Fonts + `css/home-dashboard.css`),
 
 ### 11.5 Состояние SPA-каркаса (после шага 3a)
 
-`frontend/`: React 19 + Vite 7 + TS strict, ESLint 9 + Prettier, Vitest (jsdom), `openapi-fetch` + сгенерированные типы (`npm run gen:api` из OpenAPI монолита, `Swashbuckle 7.2.0`, только `/api/**`). Dockerfile multi-stage → nginx (SPA-fallback, immutable-кэш `/assets/`). Сервисы compose: `frontend` (nginx) и `frontend-dev` (Vite HMR, профиль `dev`, `make up-dev`). Маршруты Gateway: `/api/**` → монолит, `/assets/**`, `/spa/**` → frontend, остальное → монолит (ADR 0011). Экран-заглушка показывает результат `GET /api/health` и `GET /api/me`. **Экраны Razor не переносились и не удалялись.**
+`frontend/`: React 19 + Vite 7 + TS strict, ESLint 9 + Prettier, Vitest (jsdom), `openapi-fetch` + сгенерированные типы (`npm run gen:api` из OpenAPI монолита, `Swashbuckle 7.2.0`, только `/api/**`). Dockerfile multi-stage → nginx (SPA-fallback, immutable-кэш `/assets/`). Сервисы compose: `frontend` (nginx) и `frontend-dev` (Vite HMR, профиль `dev`, `make up-dev`). Маршруты Gateway: `/api/**` → монолит, `/assets/**`, `/spa/**` → frontend, остальное → монолит (ADR 0011). (с шага 3b.0) До reverse proxy в Gateway работает `OriginCheckMiddleware`: мутации `/api/**` без `Origin`/`Referer` совпадающего с публичным origin Gateway отклоняются `403` ProblemDetails (ADR 0011 §6). Экран-заглушка показывает результат `GET /api/health` и `GET /api/me`. **Экраны Razor не переносились и не удалялись.**
 
 Скриншот: `docs/screenshots/step3a-spa-stub.png`.

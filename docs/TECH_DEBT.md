@@ -39,7 +39,7 @@
 | TD-19 | Декоративные кнопки Google/GitHub/Discord и «модули покраски/заказа» — заглушки без backend | `Views/Account/Auth.cshtml`, `home-dashboard.js` | Не вводить в заблуждение или реализовать — решение человека (вопрос §9 ARCHITECTURE) |
 | TD-21 | `global.json` отсутствует; версия SDK закреплена только в Dockerfile | корень | Создать на Фазе 1 (по плану) |
 | TD-22 | OpenAPI монолита не описывает `POST /api/files/upload`: Swashbuckle 7.x не моделирует `[FromForm] IFormFile`; акшен исключён из документа через `DocInclusionPredicate` | `Program.cs` (монолит), `frontend/src/api/schema.ts` | Дописать контракт upload в OpenAPI вручную (или заменить генератор) при переносе загрузки (3c/Фаза 5) |
-| TD-23 | На мутации `/api/**` нет antiforgery-защиты (в монолите её никогда не было); сейчас держит только `SameSite=Lax` cookie | `legacy/monolith`, ADR 0011 | При Фазе 4 (Auth Service) добавить antiforgery/double-submit для SPA |
+| TD-23 | На мутации `/api/**` нет antiforgery-защиты (в монолите её никогда не было). **Частично mitigated в шаге 3b.0:** держит `SameSite=Lax` + Origin-проверка в Gateway (403) + требование `Content-Type: application/json` для JSON-эндпоинтов (415) — ADR 0011 §6. Финальная CSRF-модель (antiforgery/double-submit) всё ещё не принята | `legacy/monolith`, `services/gateway`, ADR 0011 | При Фазе 4 (Auth Service) принять финальную CSRF-модель для SPA |
 
 ## Прочее (не долг, факты)
 
