@@ -237,6 +237,23 @@ public sealed class OriginCheckTests : IDisposable
     }
 
     [Fact]
+    public async Task PublicOrigin_env_var_spelling_is_read()
+    {
+        // Regression: the environment provider registers env vars under their
+        // exact name ("PUBLIC_ORIGIN"), not the PascalCase appsettings key.
+        // The middleware must accept the env spelling (docker compose sets it
+        // as an env var, see infra/compose.dev.yml).
+        using var factory = CreateFactory(_upstream.Url, ("PUBLIC_ORIGIN", PublicOrigin));
+        var client = factory.CreateClient();
+
+        var request = Mutation(HttpMethod.Post, "/api/models");
+        request.Headers.Add("Origin", PublicOrigin);
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
     public async Task Post_api_with_foreign_origin_returns_403_problem_details()
     {
         using var factory = CreateFactory(_upstream.Url, ("PublicOrigin", PublicOrigin));
@@ -339,6 +356,110 @@ public sealed class OriginCheckTests : IDisposable
         foreign.Headers.Add("Origin", "http://localhost:9999");
         using var foreignResponse = await client.SendAsync(foreign);
         Assert.Equal(HttpStatusCode.Forbidden, foreignResponse.StatusCode);
+    }
+
+    [Fact]
+    public async Task Referer_evil_domain_resembling_allowed_origin_returns_403()
+    {
+        // "localhost:8080.evil.com" is a lookalike, not a prefix match:
+        // origins are compared as parsed URLs (host must match exactly).
+        // TryAddWithoutValidation: the Referer value is not a valid URI
+        // (a port must be numeric), so the typed Referer header parser
+        // rejects it — but the middleware must handle such a header value
+        // when a proxy or client passes it through.
+        using var factory = CreateFactory(_upstream.Url, ("PublicOrigin", "http://localhost:8080"));
+        var client = factory.CreateClient();
+
+        var request = Mutation(HttpMethod.Post, "/api/models");
+        request.Headers.TryAddWithoutValidation("Referer", "http://localhost:8080.evil.com/spa/login");
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Null(_upstream.LastRequestPath);
+
+        // A valid-URI lookalike with the allowed origin in the path:
+        // only the host part of the Referer is the origin.
+        var pathLookalike = Mutation(HttpMethod.Post, "/api/models");
+        pathLookalike.Headers.Add("Referer", "http://evil.com/localhost:8080/spa/login");
+        using var pathResponse = await client.SendAsync(pathLookalike);
+
+        Assert.Equal(HttpStatusCode.Forbidden, pathResponse.StatusCode);
+        Assert.Null(_upstream.LastRequestPath);
+    }
+
+    [Fact]
+    public async Task Origin_literal_null_returns_403()
+    {
+        // Browsers send the literal string "null" as Origin for opaque
+        // origins (file://, redirected cross-origin requests). It is not an
+        // absolute URL and must be rejected.
+        using var factory = CreateFactory(_upstream.Url, ("PublicOrigin", "http://allowed.example"));
+        var client = factory.CreateClient();
+
+        var request = Mutation(HttpMethod.Post, "/api/models");
+        request.Headers.Add("Origin", "null");
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Null(_upstream.LastRequestPath);
+    }
+
+    [Fact]
+    public async Task Referer_own_origin_with_path_and_query_reaches_upstream()
+    {
+        // The Referer carries the full URL; only its origin part matters.
+        using var factory = CreateFactory(_upstream.Url, ("PublicOrigin", "http://allowed.example"));
+        var client = factory.CreateClient();
+
+        var request = Mutation(HttpMethod.Post, "/api/models");
+        request.Headers.Add("Referer", "http://allowed.example/spa/login?next=/library");
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("/api/models", _upstream.LastRequestPath);
+    }
+
+    [Fact]
+    public async Task Nonstandard_port_matches_exactly_but_not_as_prefix()
+    {
+        using var factory = CreateFactory(_upstream.Url, ("PublicOrigin", "http://localhost:9443"));
+        var client = factory.CreateClient();
+
+        // Neither the truncated port nor the port with an extra digit is the
+        // allowed origin (a string-prefix comparison would let these through).
+        foreach (var lookalike in new[] { "http://localhost:944", "http://localhost:94431" })
+        {
+            var request = Mutation(HttpMethod.Post, "/api/models");
+            request.Headers.Add("Origin", lookalike);
+            using var response = await client.SendAsync(request);
+            Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+            Assert.Null(_upstream.LastRequestPath);
+        }
+
+        var exact = Mutation(HttpMethod.Post, "/api/models");
+        exact.Headers.Add("Origin", "http://localhost:9443");
+        using var exactResponse = await client.SendAsync(exact);
+        Assert.Equal(HttpStatusCode.OK, exactResponse.StatusCode);
+        Assert.Equal("/api/models", _upstream.LastRequestPath);
+    }
+
+    [Theory]
+    [InlineData("https://example.com", "https://example.com:443")]
+    [InlineData("https://example.com:443", "https://example.com")]
+    [InlineData("http://example.com", "http://example.com:80")]
+    public async Task Default_port_variants_are_the_same_origin(string configuredOrigin, string requestOrigin)
+    {
+        // 443/80 are default ports: the scheme must not change, but the port
+        // may be explicit or omitted.
+        using var factory = CreateFactory(_upstream.Url, ("PublicOrigin", configuredOrigin));
+        var client = factory.CreateClient();
+
+        var request = Mutation(HttpMethod.Post, "/api/models");
+        request.Headers.Add("Origin", requestOrigin);
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("/api/models", _upstream.LastRequestPath);
     }
 
     public void Dispose() => _upstream.Dispose();
