@@ -15,6 +15,9 @@ services:
       # to the Vite dev server for HMR.
       - Upstream__Frontend=${FRONTEND_UPSTREAM:-http://frontend:80}
       - MaxUploadBytes=${MAX_UPLOAD_BYTES:-104857600}
+      # The host port the gateway is published on: the default allowed Origin
+      # for the CSRF check is http://localhost:{WEB_PORT} (ADR 0011).
+      - WEB_PORT=${WEB_PORT:-8080}
     depends_on:
       - web
       - frontend
@@ -29,7 +32,10 @@ services:
     restart: unless-stopped
     # No published ports: reachable only inside app-network (via gateway).
     environment:
-      - ASPNETCORE_ENVIRONMENT=Production
+      # The monolith environment is overridable via infra/.env: local dev runs
+      # it in Development so the SPA API client can pull the OpenAPI document
+      # (npm run gen:api); production-like stacks keep the Production default.
+      - ASPNETCORE_ENVIRONMENT=${ASPNETCORE_ENVIRONMENT:-Production}
       - ConnectionStrings__DefaultConnection=Host=db;Port=5432;Database=${DB_NAME};Username=${DB_USER};Password=${DB_PASSWORD}
       - Jwt__Key=${JWT_SECRET}
       - Jwt__Issuer=${JWT_ISSUER}
@@ -43,8 +49,6 @@ services:
       - Minio__UseSsl=false
       # Presigned URLs are signed with this endpoint so the browser can use them (TD-3).
       - PUBLIC_S3_ENDPOINT=${PUBLIC_S3_ENDPOINT:-http://localhost:${S3_PUBLIC_PORT:-9000}}
-      # OpenAPI document for the frontend API client (npm run gen:api).
-      - OpenApi__Enabled=true
     depends_on:
       - db
       - storage
