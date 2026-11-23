@@ -11,7 +11,30 @@ var builder = WebApplication.CreateBuilder(args);
 
 var upstreamAddress = builder.Configuration["Upstream:Monolith"]
     ?? throw new InvalidOperationException("Upstream:Monolith is not configured.");
+var frontendAddress = builder.Configuration["Upstream:Frontend"]
+    ?? throw new InvalidOperationException("Upstream:Frontend is not configured.");
 var maxUploadBytes = builder.Configuration.GetValue("MaxUploadBytes", 100 * 1024 * 1024);
+
+// Shared request transforms for proxied routes.
+static List<IReadOnlyDictionary<string, string>> StandardTransforms()
+{
+    // Keep the original host for URL generation and form/origin checks;
+    // add X-Forwarded-For/Host/Proto so the upstream sees the client chain.
+    return new List<IReadOnlyDictionary<string, string>>
+    {
+        new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
+        new Dictionary<string, string> { ["X-Forwarded"] = "Set" },
+    };
+}
+
+// The SPA is served under /spa/**; nginx inside the frontend container expects
+// paths without the prefix (SPA fallback to index.html).
+static List<IReadOnlyDictionary<string, string>> SpaTransforms()
+{
+    var transforms = StandardTransforms();
+    transforms.Add(new Dictionary<string, string> { ["PathRemovePrefix"] = "/spa" });
+    return transforms;
+}
 
 Log.Logger = new LoggerConfiguration()
     .Enrich.FromLogContext()
@@ -39,20 +62,44 @@ builder.Services
 builder.Services.AddHealthChecks()
     .AddCheck<UpstreamHealthCheck>(UpstreamHealthCheck.Name, tags: new[] { UpstreamHealthCheck.Tag });
 
+// Route scheme (ADR 0011). Explicit routes win over the catch-all by Order:
+//   1. /api/**    -> monolith (JSON API, incl. /api/files/upload)
+//   2. /assets/** -> frontend (hashed build assets, immutable caching)
+//   3. /spa/**    -> frontend (SPA pages, prefix stripped)
+//   4. /**        -> monolith (Razor UI, static files)
+var apiRoute = new RouteConfig
+{
+    RouteId = "api-to-monolith",
+    ClusterId = "monolith",
+    Order = 1,
+    MaxRequestBodySize = maxUploadBytes,
+    Match = new RouteMatch { Path = "/api/{**catch-all}" },
+    Transforms = StandardTransforms(),
+};
+var assetsRoute = new RouteConfig
+{
+    RouteId = "assets-to-frontend",
+    ClusterId = "frontend",
+    Order = 2,
+    Match = new RouteMatch { Path = "/assets/{**catch-all}" },
+    Transforms = StandardTransforms(),
+};
+var spaRoute = new RouteConfig
+{
+    RouteId = "spa-to-frontend",
+    ClusterId = "frontend",
+    Order = 3,
+    Match = new RouteMatch { Path = "/spa/{**catch-all}" },
+    Transforms = SpaTransforms(),
+};
 var monolithRoute = new RouteConfig
 {
     RouteId = "monolith",
     ClusterId = "monolith",
-    Order = 1,
+    Order = 4,
     MaxRequestBodySize = maxUploadBytes,
     Match = new RouteMatch { Path = "{**catch-all}" },
-    // Keep the original host for URL generation and form/origin checks;
-    // add X-Forwarded-For/Host/Proto so the upstream sees the client chain.
-    Transforms = new List<IReadOnlyDictionary<string, string>>
-    {
-        new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
-        new Dictionary<string, string> { ["X-Forwarded"] = "Set" },
-    },
+    Transforms = StandardTransforms(),
 };
 var monolithCluster = new ClusterConfig
 {
@@ -71,7 +118,23 @@ var monolithCluster = new ClusterConfig
         ["primary"] = new DestinationConfig { Address = upstreamAddress },
     },
 };
-builder.Services.AddReverseProxy().LoadFromMemory(new[] { monolithRoute }, new[] { monolithCluster });
+var frontendCluster = new ClusterConfig
+{
+    ClusterId = "frontend",
+    // nginx inside the frontend container speaks plain HTTP/1.1.
+    HttpRequest = new ForwarderRequestConfig
+    {
+        Version = new Version(1, 1),
+        VersionPolicy = HttpVersionPolicy.RequestVersionOrLower,
+    },
+    Destinations = new Dictionary<string, DestinationConfig>
+    {
+        ["primary"] = new DestinationConfig { Address = frontendAddress },
+    },
+};
+builder.Services.AddReverseProxy().LoadFromMemory(
+    new[] { apiRoute, assetsRoute, spaRoute, monolithRoute },
+    new[] { monolithCluster, frontendCluster });
 
 var app = builder.Build();
 

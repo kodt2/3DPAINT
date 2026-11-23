@@ -37,7 +37,19 @@ namespace LoginAndReg.Controllers
             }
 
             var token = _jwtService.GenerateToken(user.login);
-            Response.Cookies.Append("jwt", token, new CookieOptions { HttpOnly = true, Secure = true });
+            // SameSite=Lax + Path=/ are set explicitly: the future SPA shares the
+            // Gateway origin with the API, so Lax is enough and keeps the legacy
+            // cross-page behavior unchanged (see ADR 0011).
+            Response.Cookies.Append(
+                "jwt",
+                token,
+                new CookieOptions
+                {
+                    HttpOnly = true,
+                    Secure = true,
+                    SameSite = SameSiteMode.Lax,
+                    Path = "/",
+                });
 
             return Ok(new { success = true, redirectUrl = Url.Action("Index", "Home") });
         }

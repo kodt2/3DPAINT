@@ -12,12 +12,12 @@ namespace Gateway.Tests;
 
 public sealed class GatewayTests : IDisposable
 {
-    private readonly StubUpstream _upstream = new();
+    private readonly StubUpstream _upstream = new("monolith");
 
     [Fact]
     public async Task Proxy_forwards_request_to_upstream_and_generates_correlation_id()
     {
-        using var factory = CreateFactory(_upstream.Url);
+        using var factory = CreateFactory(_upstream.Url, _upstream.Url);
         var client = factory.CreateClient();
 
         var request = new HttpRequestMessage(HttpMethod.Get, "/");
@@ -38,7 +38,7 @@ public sealed class GatewayTests : IDisposable
     [Fact]
     public async Task Proxy_adds_x_forwarded_headers_for_upstream()
     {
-        using var factory = CreateFactory(_upstream.Url);
+        using var factory = CreateFactory(_upstream.Url, _upstream.Url);
         var client = factory.CreateClient();
 
         var request = new HttpRequestMessage(HttpMethod.Get, "/");
@@ -58,7 +58,7 @@ public sealed class GatewayTests : IDisposable
     [Fact]
     public async Task Proxy_passes_incoming_correlation_id_through()
     {
-        using var factory = CreateFactory(_upstream.Url);
+        using var factory = CreateFactory(_upstream.Url, _upstream.Url);
         var client = factory.CreateClient();
 
         var request = new HttpRequestMessage(HttpMethod.Get, "/");
@@ -73,7 +73,7 @@ public sealed class GatewayTests : IDisposable
     [Fact]
     public async Task Health_live_returns_200()
     {
-        using var factory = CreateFactory(_upstream.Url);
+        using var factory = CreateFactory(_upstream.Url, _upstream.Url);
         var client = factory.CreateClient();
 
         using var response = await client.GetAsync("/health/live");
@@ -84,7 +84,7 @@ public sealed class GatewayTests : IDisposable
     [Fact]
     public async Task Health_ready_returns_200_when_upstream_is_available()
     {
-        using var factory = CreateFactory(_upstream.Url);
+        using var factory = CreateFactory(_upstream.Url, _upstream.Url);
         var client = factory.CreateClient();
 
         using var response = await client.GetAsync("/health/ready");
@@ -96,7 +96,7 @@ public sealed class GatewayTests : IDisposable
     public async Task Health_ready_returns_503_when_upstream_is_unavailable()
     {
         // Port 1 on loopback: nothing listens there, connection is refused.
-        using var factory = CreateFactory("http://127.0.0.1:1");
+        using var factory = CreateFactory("http://127.0.0.1:1", _upstream.Url);
         var client = factory.CreateClient();
 
         using var response = await client.GetAsync("/health/ready");
@@ -111,9 +111,77 @@ public sealed class GatewayTests : IDisposable
         return string.Join(",", values!);
     }
 
-    private static WebApplicationFactory<Program> CreateFactory(string upstreamAddress)
+    [Fact]
+    public async Task Route_priority_api_goes_to_monolith()
+    {
+        using var frontend = new StubUpstream("frontend");
+        using var factory = CreateFactory(_upstream.Url, frontend.Url);
+        var client = factory.CreateClient();
+
+        using var response = await client.GetAsync("/api/files");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("monolith-ok", await response.Content.ReadAsStringAsync());
+        Assert.Equal("/api/files", _upstream.LastRequestPath);
+        Assert.Null(frontend.LastRequestPath);
+    }
+
+    [Fact]
+    public async Task Route_priority_assets_goes_to_frontend_with_path_unchanged()
+    {
+        using var frontend = new StubUpstream("frontend");
+        using var factory = CreateFactory(_upstream.Url, frontend.Url);
+        var client = factory.CreateClient();
+
+        using var response = await client.GetAsync("/assets/index-abc123.js");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("frontend-ok", await response.Content.ReadAsStringAsync());
+        Assert.Equal("/assets/index-abc123.js", frontend.LastRequestPath);
+        Assert.Null(_upstream.LastRequestPath);
+    }
+
+    [Fact]
+    public async Task Route_priority_spa_goes_to_frontend_with_prefix_stripped()
+    {
+        using var frontend = new StubUpstream("frontend");
+        using var factory = CreateFactory(_upstream.Url, frontend.Url);
+        var client = factory.CreateClient();
+
+        using var response = await client.GetAsync("/spa/models");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("frontend-ok", await response.Content.ReadAsStringAsync());
+        Assert.Equal("/models", frontend.LastRequestPath);
+        Assert.Null(_upstream.LastRequestPath);
+    }
+
+    [Fact]
+    public async Task Route_priority_catch_all_goes_to_monolith()
+    {
+        using var frontend = new StubUpstream("frontend");
+        using var factory = CreateFactory(_upstream.Url, frontend.Url);
+        var client = factory.CreateClient();
+
+        using var root = await client.GetAsync("/");
+        Assert.Equal(HttpStatusCode.OK, root.StatusCode);
+        Assert.Equal("monolith-ok", await root.Content.ReadAsStringAsync());
+        Assert.Equal("/", _upstream.LastRequestPath);
+
+        using var account = await client.GetAsync("/Account/Login");
+        Assert.Equal(HttpStatusCode.OK, account.StatusCode);
+        Assert.Equal("monolith-ok", await account.Content.ReadAsStringAsync());
+        Assert.Equal("/Account/Login", _upstream.LastRequestPath);
+        Assert.Null(frontend.LastRequestPath);
+    }
+
+    private static WebApplicationFactory<Program> CreateFactory(string upstreamAddress, string frontendAddress)
         => new TestAppFactory()
-            .WithWebHostBuilder(builder => builder.UseSetting("Upstream:Monolith", upstreamAddress));
+            .WithWebHostBuilder(builder =>
+            {
+                builder.UseSetting("Upstream:Monolith", upstreamAddress);
+                builder.UseSetting("Upstream:Frontend", frontendAddress);
+            });
 
     private sealed class TestAppFactory : WebApplicationFactory<Program>
     {
@@ -129,9 +197,11 @@ public sealed class GatewayTests : IDisposable
 internal sealed class StubUpstream : IDisposable
 {
     private readonly WebApplication _app;
+    private readonly string _marker;
 
-    public StubUpstream()
+    public StubUpstream(string marker)
     {
+        _marker = marker;
         var port = GetFreePort();
         Url = $"http://127.0.0.1:{port}";
         var builder = WebApplication.CreateBuilder();
@@ -147,7 +217,8 @@ internal sealed class StubUpstream : IDisposable
             }
 
             LastRequestHeaders = collection;
-            return context.Response.WriteAsync("stub-ok");
+            LastRequestPath = context.Request.Path.Value;
+            return context.Response.WriteAsync($"{_marker}-ok");
         });
         _app.StartAsync().GetAwaiter().GetResult();
     }
@@ -155,6 +226,8 @@ internal sealed class StubUpstream : IDisposable
     public string Url { get; }
 
     public NameValueCollection? LastRequestHeaders { get; private set; }
+
+    public string? LastRequestPath { get; private set; }
 
     private static int GetFreePort()
     {
