@@ -185,3 +185,49 @@
 - [ ] Presigned URL открывается **из браузера** (проверять с хоста, не из docker-сети!).
 - [ ] Статика (js/css) отдаётся, `.glb` — с content-type `model/gltf-binary`.
 - [ ] (по мере фаз) health-эндпоинты сервисов → 200.
+- [ ] (с шага 3a) `GET /spa/` → SPA (title `3DPAINT`); deep-link `GET /spa/любой/путь` → 200 (SPA-fallback).
+- [ ] (с шага 3a) `GET /api/health` → 200 JSON; `GET /api/me` без cookie → 401 **JSON**; с cookie → 200.
+
+## 11. Инвентарь экранов (составлен 2026-11-23, шаг 3a; субагент + сверка главным агентом)
+
+Маршрутизация монолита — conventional (`{controller=Account}/{action=Auth}/{id?}`), `ViewBag` не используется. Всего `.cshtml`: 5 (2 экрана + 2 layout + `_ViewImports`).
+
+### 11.1 Экраны
+
+| # | Экран (View) | Маршрут | JS (свой) | JS (чужой) | Вызовы в бэкенд | Данные | Примечания |
+|---|---|---|---|---|---|---|---|
+| E1 | `Views/Account/Auth.cshtml` (layout `_AuthLayout`) | `GET /` и `GET /Account/Auth` (публично) | `js/auth-logic.js` (формы, fetch, табы), `js/auth-visuals.js` (модуль: Three.js-фон) | Three.js r157 + GLTFLoader (`lib/three/`), шрифт Inter (Google Fonts) | `POST /Account/Login`, `POST /Account/Register` (FormData) | ViewModel'ов на GET нет; на POST: `LoginViewModel{Login,Password}`, `RegistrationViewModel{FullName,BirthDate,Login,Password}` → сущности `User`, `Person` | Декоративные: кнопки Google/GitHub/Discord, «Забыли пароль?». Three.js-фон: модель `wwwroot/models/auth-object.glb` (fallback — wireframe-икосаэдр), parallax, материалы реагируют на заполнение форм. Весь CSS экрана — инлайн в `_AuthLayout` (~590 строк) |
+| E2 | `Views/Home/Index.cshtml` (layout `_HomeLayout`) | `GET /Home/Index` (**JWT**) | `js/home-dashboard.js` (модуль: сайдбар, upload-drawer, drag&drop, валидация, карточки, per-card Three.js-сцены) | Three.js r157 + GLTFLoader (`lib/three/`), шрифт Inter | `GET /api/files`, `POST /api/files/upload` | ViewModel'а нет; данные из `UserFiles` (`id, fileName, fileSize, createdAt, previewUrl, thumbnailUrl` — presigned 30 мин) | Профиль в сайдбаре — хардкод («Алексей С.»); кнопки «покраска»/«заказ» — заглушки без обработчиков; «pipeline» загрузки — визуальный (`await wait(450)`); превью карточек — **SVG-заглушки** (`<img>`), ветка Three.js/canvas для загруженных файлов не выполняется |
+
+Layout'ы: `_HomeLayout` (только Google Fonts + `css/home-dashboard.css`), `_AuthLayout` (Google Fonts + инлайн-<style> + `#bgCanvas`).
+
+### 11.2 Мёртвый/мусорный код в `wwwroot` (для 3d)
+
+| Файл | Статус |
+|---|---|
+| `js/site.js` | Пустой placeholder, нигде не подключается |
+| `lib/three/BufferGeometryUtils.js` | Нигде не импортируется |
+| `lib/bootstrap/` (v5.3.3) | Нигде не подключается |
+| `lib/jquery/` (v3.7.1), `lib/jquery-validation/`, `lib/jquery-validation-unobtrusive/` | Нигде не подключаются |
+| `css/site.css` | Нигде не подключается |
+| `models/README.md` | Пустой файл |
+
+### 11.3 Экран → JSON-эндпоинты, которые понадобятся SPA (без реализации, кроме отмеченных)
+
+| Экран SPA | Нужные JSON-эндпоинты монолита | Статус (шаг 3a) |
+|---|---|---|
+| `/spa/` (каркас, connection-check) | `GET /api/health` (публичный), `GET /api/me` (JWT) | ✅ добавлены (`ApiStatusController`) |
+| Вход/регистрация (E1) | `POST /api/auth/login`, `POST /api/auth/register`, `POST /api/auth/logout`, `GET /api/me` | ⏳ делать в 3c (пока SPA может логиниться legacy-эндпоинтами `/Account/Login`/`Register` — form-encoded; logout отсутствует, TD-6) |
+| Библиотека моделей (E2) | `GET /api/files` (уже есть), `POST /api/files/upload` (уже есть, но **исключён из OpenAPI** — Swashbuckle не моделирует `[FromForm] IFormFile`), `DELETE /api/files/{id}`, `GET /api/files/{id}` (метаданные+свежие presigned) | ⏳ `DELETE`/`GET {id}` — новые, сделать при переносе |
+| 3D-вьюер модели (**новая функция**, не перенос) | `GET /api/files/{id}/preview` (свежий presigned GET) | ⏳ сделать вместе со вьюером (3c) |
+| Paint (ADR 0010, Фаза 6.5) | `POST /api/files/{id}/textures` (версии текстур), `GET /api/files/{id}/textures` | ⏳ не в Фазе 3 |
+
+### 11.4 3D-вьюер — новая функция
+
+В текущем Razor-UI «превью» карточек — это SVG-заглушки (`<img class=asset-thumb>`), т.к. монолит всегда создаёт thumbnail; Three.js-ветка в `home-dashboard.js` для загруженных файлов **не выполняется**. Проверено (шаг 3a): `GLTFLoader` грузит пользовательский GLB напрямую из S3 через presigned GET из оригина Gateway — 2 меша, UV на месте, рендерится. Реальный 3D-вьюер (Three.js / `@react-three/fiber`) добавляется в `frontend/` как новая функция при переносе (3c), оценка отдельно.
+
+### 11.5 Состояние SPA-каркаса (после шага 3a)
+
+`frontend/`: React 19 + Vite 7 + TS strict, ESLint 9 + Prettier, Vitest (jsdom), `openapi-fetch` + сгенерированные типы (`npm run gen:api` из OpenAPI монолита, `Swashbuckle 7.2.0`, только `/api/**`). Dockerfile multi-stage → nginx (SPA-fallback, immutable-кэш `/assets/`). Сервисы compose: `frontend` (nginx) и `frontend-dev` (Vite HMR, профиль `dev`, `make up-dev`). Маршруты Gateway: `/api/**` → монолит, `/assets/**`, `/spa/**` → frontend, остальное → монолит (ADR 0011). Экран-заглушка показывает результат `GET /api/health` и `GET /api/me`. **Экраны Razor не переносились и не удалялись.**
+
+Скриншот: `docs/screenshots/step3a-spa-stub.png`.

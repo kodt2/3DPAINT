@@ -60,6 +60,33 @@ make up   # = docker compose -f infra/compose.yml -f infra/compose.override.yml 
 
 Полезные команды: `make down`, `make logs`, `make build`.
 
+## SPA (frontend, с подшага 3a)
+
+Каркас SPA живёт в `frontend/` (React 19 + Vite 7 + TS strict). В dev-стэке он
+сервис `frontend` (nginx: SPA-fallback + immutable-кэш `/assets/`), а Gateway
+маршрутизирует (ADR 0011):
+
+| Путь | Куда |
+|---|---|
+| `/api/**` | монолит (JSON API) |
+| `/assets/**` | frontend (hashed-ассеты сборки) |
+| `/spa/**` | frontend (префикс снимается, SPA-fallback) |
+| всё остальное | монолит (Razor-страницы, статика) |
+
+SPA доступен по `http://localhost:${WEB_PORT}/spa/` — пока это заглушка с
+проверкой связи `/api/health` и `/api/me`. Старые Razor-страницы остаются на
+прежних URL (`/`, `/Account/Auth`, `/Home/Index`).
+
+Режим HMR для работы над фронтендом (опционально):
+
+```bash
+make up-dev   # поднимает профиль `dev`: Vite-сервер на 127.0.0.1:5173, Gateway шлёт /spa/** на него
+```
+
+Типы API-клиента генерируются из OpenAPI монолита (`npm run gen:api` в
+`frontend/`, требует работающий стэк; upload-эндпоинт в документе пока не
+описан — TD-22).
+
 ## Публичный S3 (presigned-ссылки и браузерная загрузка)
 
 Приложение отдаёт presigned-ссылки на S3-хранилище, а браузер по ним скачивает

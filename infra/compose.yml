@@ -11,9 +11,13 @@ services:
     environment:
       - ASPNETCORE_ENVIRONMENT=Production
       - Upstream__Monolith=http://web:8080
+      # nginx build by default; the `dev` profile (make up-dev) switches it
+      # to the Vite dev server for HMR.
+      - Upstream__Frontend=${FRONTEND_UPSTREAM:-http://frontend:80}
       - MaxUploadBytes=${MAX_UPLOAD_BYTES:-104857600}
     depends_on:
       - web
+      - frontend
     restart: unless-stopped
     networks:
       - app-network
@@ -39,9 +43,39 @@ services:
       - Minio__UseSsl=false
       # Presigned URLs are signed with this endpoint so the browser can use them (TD-3).
       - PUBLIC_S3_ENDPOINT=${PUBLIC_S3_ENDPOINT:-http://localhost:${S3_PUBLIC_PORT:-9000}}
+      # OpenAPI document for the frontend API client (npm run gen:api).
+      - OpenApi__Enabled=true
     depends_on:
       - db
       - storage
+    networks:
+      - app-network
+
+  # SPA (nginx). The Gateway serves it under /spa/** (prefix stripped) and
+  # /assets/** (hashed build assets, immutable caching) — see ADR 0011.
+  frontend:
+    build:
+      context: ../frontend
+    restart: unless-stopped
+    networks:
+      - app-network
+
+  # Vite dev server for HMR. Enabled only with: make up-dev (profile `dev`).
+  # In that mode the Gateway routes /spa/** to this service instead of nginx.
+  frontend-dev:
+    image: node:20.19.5-alpine3.22
+    profiles: ["dev"]
+    working_dir: /app
+    volumes:
+      - ../frontend:/app
+    environment:
+      - VITE_BASE=/spa/
+      - GATEWAY_URL=http://gateway:8080
+    command: ["sh", "-c", "npm ci --no-audit --no-fund && npm run dev"]
+    ports:
+      - "127.0.0.1:5173:5173"
+    depends_on:
+      - gateway
     networks:
       - app-network
 

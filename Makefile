@@ -4,10 +4,13 @@ MONOLITH_CSPROJ := legacy/monolith/LoginAndReg.csproj
 DOTNET_SDK_8_IMG := mcr.microsoft.com/dotnet/sdk:8.0
 DOTNET_SDK_10_IMG := mcr.microsoft.com/dotnet/sdk:10.0
 
-.PHONY: up down logs build test
+.PHONY: up up-dev down logs build test
 
 up: ## Build (if needed) and start the full stack
 	$(COMPOSE) up -d --build
+
+up-dev: ## Start the stack with the Vite dev server (HMR) for frontend work
+	COMPOSE_PROFILES=dev FRONTEND_UPSTREAM=http://frontend-dev:5173 $(COMPOSE) up -d --build
 
 down: ## Stop the stack
 	$(COMPOSE) down
