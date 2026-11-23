@@ -47,3 +47,63 @@ body {
   font-family: monospace;
   overflow-wrap: anywhere;
 }
+
+/* Auth screens (step 3c.1) */
+.auth-card {
+  max-width: 24rem;
+}
+
+.auth-card form {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.field {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.field > span {
+  font-weight: 600;
+}
+
+.field input {
+  padding: 0.5rem 0.6rem;
+  font-size: 1rem;
+  border: 1px solid #8884;
+  border-radius: 0.3rem;
+  background: transparent;
+  color: inherit;
+}
+
+.field-error {
+  color: #c62828;
+}
+
+.form-error {
+  color: #c62828;
+  margin: 0;
+}
+
+.auth-card button[type='submit'] {
+  padding: 0.5rem 1rem;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.auth-card button[type='submit']:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.auth-switch {
+  margin-top: 1rem;
+}
+
+.library-greeting {
+  font-size: 1.15rem;
+}
+
+.library-logout {
+  margin-top: 1rem;
+}

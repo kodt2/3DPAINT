@@ -9,6 +9,11 @@ vi.mock('../../api/client', () => ({
 import { api } from '../../api/client';
 import { ApiCheck } from './ApiCheck';
 
+// The vi.mock above replaces the generated client with plain vi.fn()s; cast
+// it once so queued results do not have to repeat openapi-fetch's strict
+// FetchResponse shape (the mock never runs the real client).
+const mockApi = api as unknown as { GET: ReturnType<typeof vi.fn> };
+
 function okResult(data: unknown) {
   return { response: { ok: true, status: 200, statusText: 'OK', headers: new Headers() }, data };
 }
@@ -22,9 +27,9 @@ function unauthorizedResult() {
 
 describe('ApiCheck', () => {
   it('shows /api/health and /api/me results after the check', async () => {
-    vi.mocked(api.GET)
-      .mockResolvedValueOnce(okResult({ status: 'ok', service: 'monolith' }))
-      .mockResolvedValueOnce(unauthorizedResult());
+    mockApi.GET.mockResolvedValueOnce(
+      okResult({ status: 'ok', service: 'monolith' }),
+    ).mockResolvedValueOnce(unauthorizedResult());
 
     render(<ApiCheck />);
 
@@ -33,11 +38,11 @@ describe('ApiCheck', () => {
 
     await waitFor(() => expect(screen.getByText(/"status":"ok"/)).toBeInTheDocument());
     expect(screen.getByText('401 (не авторизован)')).toBeInTheDocument();
-    expect(vi.mocked(api.GET)).toHaveBeenCalledTimes(2);
+    expect(mockApi.GET).toHaveBeenCalledTimes(2);
   });
 
   it('reports the API as unreachable when the request fails', async () => {
-    vi.mocked(api.GET).mockRejectedValueOnce(new TypeError('failed to fetch'));
+    mockApi.GET.mockRejectedValueOnce(new TypeError('failed to fetch'));
 
     render(<ApiCheck />);
 
