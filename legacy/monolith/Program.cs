@@ -47,6 +47,14 @@ if (string.IsNullOrWhiteSpace(minioOptions.Endpoint)
 }
 
 builder.Services.Configure<MinioOptions>(builder.Configuration.GetSection(MinioOptions.SectionName));
+// Presigned URLs must be reachable from the browser (TD-3): sign them with the
+// public S3 endpoint when configured. The env name is top-level on purpose so
+// the value stays one plain variable in .env (ADR 0009).
+var publicS3Endpoint = builder.Configuration["PUBLIC_S3_ENDPOINT"] ?? string.Empty;
+if (!string.IsNullOrWhiteSpace(publicS3Endpoint))
+{
+    builder.Services.Configure<MinioOptions>(options => options.PublicEndpoint = publicS3Endpoint);
+}
 builder.Services.Configure<FormOptions>(options =>
 {
     options.ValueLengthLimit = int.MaxValue;

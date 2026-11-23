@@ -9,7 +9,7 @@
 |---|---|---|---|
 | ~~TD-14~~ | ✅ **Решено в шаге 1.0 (2026-11-22):** образ S3-хранилища заменён на `chrislusf/seaweedfs:4.54` (тег зафиксирован), ADR 0009 | `docker-compose.yml` | Чистый `docker compose up` поднимается |
 | ~~TD-2~~ | ✅ **Решено в шаге 1.0 (2026-11-22):** `.env.example`: `MINIO_BUCKET=USERDATA` → `userdata` | `.env.example` | Загрузка по примеру не падает с 500 |
-| TD-3 | Presigned URL содержит внутренний hostname `storage:9000` | `FileStorageService.GetPresignedUrlAsync` | Из браузера (вне docker-сети) файлы **не грузятся**: превью/«открыть» не работают (`ERR_NAME_NOT_RESOLVED`). Решается на Фазе 2 (gateway) и/или Фазе 5 (публичный endpoint Model Service) |
+| ~~TD-3~~ | ✅ **Решено в шаге 3.0 (2026-11-22):** presigned URL подписываются отдельным клиентом с публичного эндпоинта (`PUBLIC_S3_ENDPOINT`), внутренние операции — с `storage:9000`; S3 публикуется на `127.0.0.1:${S3_PUBLIC_PORT}` + CORS `-s3.allowedOrigins`; браузерные GET/PUT и превью работают (Chromium, сценарий 16 в `CURRENT_STATE.md`) | `FileStorageService`, `MinioOptions.PublicEndpoint`, `infra/compose.yml` | Закрыто: превью/«открыть»/прямой upload из браузера работают; паттерн «два клиента» будет переиспользован в Model Service (Фаза 5) |
 | ~~TD-4~~ | ✅ **Решено в шаге 1.0 (2026-11-22):** поле логина `type="email"` → `type="text"` | `Views/Account/Auth.cshtml` | Не-email логины проходят форму; при переносе экрана входа (Фаза 3) учтено |
 
 ## Средние (корректность/безопасность)

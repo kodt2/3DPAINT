@@ -25,6 +25,10 @@ public class FileStorageService : IFileStorageService
 
     private readonly ILogger<FileStorageService> _logger;
 
+    // Lazily created client for signing presigned URLs against the public
+    // endpoint (TD-3). All data operations keep using the internal client.
+    private IMinioClient? _presignClient;
+
     public FileStorageService(IMinioClient minioClient, IOptions<MinioOptions> options, AppDbContext appDbContext, ILogger<FileStorageService> logger)
     {
         _minioClient = minioClient;
@@ -118,7 +122,44 @@ public class FileStorageService : IFileStorageService
             .WithObject(objectPath)
             .WithExpiry(expiry);
 
-        return await _minioClient.PresignedGetObjectAsync(args);
+        // Sign with the public endpoint so the browser can resolve and hit the URL
+        // directly; the Host inside the signature must match what the browser requests.
+        return await GetPresignClient().PresignedGetObjectAsync(args);
+    }
+
+    private IMinioClient GetPresignClient()
+    {
+        if (_presignClient is not null)
+        {
+            return _presignClient;
+        }
+
+        if (string.IsNullOrWhiteSpace(_options.PublicEndpoint))
+        {
+            _logger.LogWarning(
+                "S3 public endpoint is not configured; presigned URLs use the internal endpoint {Endpoint} " +
+                "and may be unreachable from the browser (TD-3)",
+                _options.Endpoint);
+            return _minioClient;
+        }
+
+        // The Minio SDK expects "host:port" without a scheme; the configured value
+        // is a full URL (that is what the browser opens), so strip the scheme.
+        var publicUri = new Uri(_options.PublicEndpoint);
+        var endpoint = $"{publicUri.Host}:{publicUri.Port}";
+        var client = new MinioClient()
+            .WithEndpoint(endpoint)
+            .WithCredentials(_options.AccessKey, _options.SecretKey)
+            .WithSSL(publicUri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+            .WithHttpClient(new HttpClient(new HttpClientHandler()) { DefaultRequestVersion = System.Net.HttpVersion.Version11 });
+
+        if (!string.IsNullOrWhiteSpace(_options.Region))
+        {
+            client = client.WithRegion(_options.Region);
+        }
+
+        _presignClient = client.Build();
+        return _presignClient;
     }
 
     private static void ValidateFile(IFormFile file)
