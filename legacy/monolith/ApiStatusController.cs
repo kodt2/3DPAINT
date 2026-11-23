@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using LoginAndReg.Models.Api;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -29,14 +30,24 @@ public class ApiStatusController : ControllerBase
         return Ok(new { status = "ok", service = "monolith" });
     }
 
-    /// <summary>Current user from the auth cookie. 401 when the cookie is absent or stale.</summary>
+    /// <summary>
+    /// Current user from the auth cookie. 401 when the cookie is absent or
+    /// stale. The response body is the AuthUserDto contract (same shape as
+    /// the /api/auth/* login/register responses) — the SPA types it from
+    /// OpenAPI instead of an anonymous object.
+    /// </summary>
     [HttpGet("me")]
+    [ProducesResponseType(typeof(AuthUserDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     public async Task<IActionResult> Me(CancellationToken cancellationToken)
     {
         var login = User.FindFirstValue(ClaimTypes.Name);
         if (string.IsNullOrWhiteSpace(login))
         {
-            return Unauthorized(new { message = "Not authenticated" });
+            return Problem(
+                statusCode: StatusCodes.Status401Unauthorized,
+                title: "Unauthorized",
+                detail: "Not authenticated");
         }
 
         var user = await _context.Users
@@ -45,7 +56,10 @@ public class ApiStatusController : ControllerBase
             .SingleOrDefaultAsync(cancellationToken);
         if (user is null)
         {
-            return Unauthorized(new { message = "User not found" });
+            return Problem(
+                statusCode: StatusCodes.Status401Unauthorized,
+                title: "Unauthorized",
+                detail: "User not found");
         }
 
         var person = await _context.Persons
@@ -53,11 +67,7 @@ public class ApiStatusController : ControllerBase
             .Select(p => new { p.full_name, p.birth_date })
             .FirstOrDefaultAsync(cancellationToken);
 
-        return Ok(new
-        {
-            login = login,
-            fullName = person?.full_name,
-            birthDate = person?.birth_date,
-        });
+        AuthUserDto dto = new(login, person?.full_name, person?.birth_date);
+        return Ok(dto);
     }
 }
