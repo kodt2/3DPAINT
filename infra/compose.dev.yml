@@ -1,0 +1,14 @@
+# Dev-only Gateway settings for `make up-dev` (profile `dev`, Vite dev
+# server on 127.0.0.1:5173).
+#
+# In dev the browser talks to Vite directly and Vite proxies /api to the
+# Gateway, so the Vite origin (http://localhost:5173) must pass the CSRF
+# Origin check in addition to the default http://localhost:{WEB_PORT}.
+#
+# NEVER use this file for production-like runs: it widens the allowed
+# origins. Production sets PUBLIC_ORIGIN to the public domain only
+# (README, «Деплой на сервер»).
+services:
+  gateway:
+    environment:
+      PUBLIC_ORIGIN: http://localhost:${WEB_PORT:-8080},http://localhost:5173
