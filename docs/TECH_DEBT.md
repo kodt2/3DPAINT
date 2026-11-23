@@ -21,6 +21,7 @@
 | TD-13 | Multipart-загрузка полностью буферизуется в памяти (`MemoryBufferThreshold = int.MaxValue`), лимит 500 MiB | `Program.cs` | Один запрос на 500 МБ → 500 МБ RAM процесса. На Фазе 5 (Model Service) — стриминг в S3/диск |
 | TD-16 | Конфигурация nginx + TLS живого демо (3dpaint.tw1.su) отсутствует в репозитории | README | Прод-инфраструктура невоспроизводима из репо; нужна при работе с gateway |
 | ~~TD-20~~ | ✅ **Решено (2026-11-22):** планировочные документы остаются вне git (решение человека); изменение `.gitignore` закоммитить на Фазе 1 | `.gitignore` | — |
+| ~~TD-24~~ | ✅ **Решено в шаге 3c.1 (2026-11-24), bug:** env `PUBLIC_ORIGIN` не читался Gateway — middleware брал только `configuration["PublicOrigin"]`, а env-провайдер регистрирует `PUBLIC_ORIGIN` (case-sensitive lookup), поэтому переменная из env молча игнорировалась (CSRF-проверка работала по умолчанию `http://localhost:{WEB_PORT}`) | `services/gateway/Middleware/OriginCheckMiddleware.cs` | Исправлено: `PublicOrigin` ?? `PUBLIC_ORIGIN` + регрессионный тест. Урок: проверять spelling env-переменных при добавлении |
 
 ## Низкие (гигиена)
 
@@ -28,7 +29,7 @@
 |---|---|---|---|
 | TD-1 | JS-библиотеки закоммичены в git: bootstrap (8.4 МБ), jquery* (1.1 МБ), three.js (1.3 МБ) | `wwwroot/lib/` | На Фазе 3 заменить на Vite + npm (по плану) |
 | TD-15 | Бинарный ассет `wwwroot/models/auth-object.glb` (3.7 МБ) в git | `wwwroot/models/` | Демо-объект экрана логина; на Фазе 3 перенести в npm/CDN или оставить осознанно |
-| TD-6 | Нет logout, refresh-токенов, `/api/auth/me` | `AccountController` | Покрыть на Фазе 4 (Auth Service) |
+| TD-6 | Нет refresh-токенов. **Частично закрыто в 3c.1:** добавлены `POST /api/auth/logout` (удаление cookie) и `GET /api/me` | `legacy/monolith/Controllers/AuthApiController.cs` | Refresh-токены — при необходимости на Фазе 4 (Auth Service) |
 | TD-7 | Мёртвый код: `AccountService._fileStorageService` (unused, CS0169/CS8618), `DeleteAccountAsync` (нигде не вызывается), `FileUploadViewModel` (пустая обёртка) | `Services/`, `Models/` | Чистить при касании файла, не массово |
 | TD-8 | `Persons.user_id` без FK-ограничения в БД | миграция `InitialCreate` | Данные только под контролем приложения |
 | TD-9 | `AppDbContext.cs` лежит в папке `data/` | `data/` | Перенести при рефакторинге структуры |
