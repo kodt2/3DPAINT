@@ -1,6 +1,12 @@
 using LoginAndReg.Models.Options;
+using LoginAndReg.OpenApi;
 using LoginAndReg.Services;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc.Controllers;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Extensions;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.EntityFrameworkCore;
@@ -81,6 +87,30 @@ builder.Services.AddSingleton<IMinioClient>(_ =>
 builder.Services.AddControllersWithViews();
 builder.Services.AddAuthorization();
 
+// OpenAPI for the /api surface only (the SPA client is generated from it;
+// see ApiOnlyDocumentFilter). Page routes stay out of the document.
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen(options =>
+{
+    options.SwaggerDoc("v1", new Microsoft.OpenApi.Models.OpenApiInfo
+    {
+        Title = "3DPAINT monolith API",
+        Version = "v1",
+        Description = "JSON API of the legacy monolith consumed by the SPA (frontend/).",
+    });
+    options.DocumentFilter<ApiOnlyDocumentFilter>();
+    // Swashbuckle 7.x cannot model [FromForm] IFormFile parameters; the upload
+    // contract is added to the document manually in a later phase (TECH_DEBT).
+    options.DocInclusionPredicate((_, apiDescription) =>
+    {
+        if (apiDescription.ActionDescriptor is not ControllerActionDescriptor action)
+        {
+            return true;
+        }
+        return !(action.ControllerName == "UserFiles" && action.ActionName == "Upload");
+    });
+});
+
 builder.Services.AddAuthentication(options =>
 {
     options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
@@ -146,9 +176,63 @@ app.UseStaticFiles(new StaticFileOptions
     ContentTypeProvider = provider
 });
 
+// OpenAPI document for the SPA client (`npm run gen:api` in frontend/).
+// Enabled by default in Development and via OpenApi:Enabled=true (dev compose
+// stack: the monolith is only reachable through the gateway). The Swagger UI
+// stays dev-only.
+if (app.Configuration.GetValue("OpenApi:Enabled", app.Environment.IsDevelopment()))
+{
+    app.UseSwagger();
+    if (app.Environment.IsDevelopment())
+    {
+        app.UseSwaggerUI();
+    }
+}
+
 app.UseRouting();
 
 app.UseAuthentication();
+
+// True when the endpoint carries [Authorize] without an [AllowAnonymous] override.
+static bool RequiresAuthorization(HttpContext context)
+{
+    var endpoint = context.GetEndpoint();
+    if (endpoint is null)
+    {
+        return false;
+    }
+
+    return endpoint.Metadata.GetMetadata<IAuthorizeData>() is not null
+           && endpoint.Metadata.GetMetadata<AllowAnonymousAttribute>() is null;
+}
+
+// /api/** must answer 401 with a JSON body (the SPA parses it) instead of the
+// default empty challenge. Done here — before authorization — so the JWT
+// handler never touches the response it would otherwise start for us.
+// Non-/api paths keep the legacy challenge behavior untouched.
+app.Use(async (context, next) =>
+{
+    if (
+        context.Request.Path.StartsWithSegments("/api")
+        // Only endpoints that actually require authentication ([AllowAnonymous]
+        // probes such as /api/health are left alone).
+        && RequiresAuthorization(context))
+    {
+        var authResult = await context.AuthenticateAsync(JwtBearerDefaults.AuthenticationScheme);
+        if (!authResult.Succeeded)
+        {
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            context.Response.ContentType = "application/json";
+            context.Response.Headers.WWWAuthenticate = "Bearer";
+            await context.Response.WriteAsync(
+                "{\"code\":\"unauthorized\",\"message\":\"Authentication required\"}");
+            return;
+        }
+    }
+
+    await next();
+});
+
 app.UseAuthorization();
 
 app.MapControllerRoute(
