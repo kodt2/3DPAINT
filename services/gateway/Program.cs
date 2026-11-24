@@ -136,11 +136,29 @@ builder.Services.AddReverseProxy().LoadFromMemory(
     new[] { apiRoute, assetsRoute, spaRoute, monolithRoute },
     new[] { monolithCluster, frontendCluster });
 
+// Per-client key for the auth rate limit (ADR 0011). By default no proxy is
+// trusted: the client key is the socket peer and X-Forwarded-For is ignored.
+// Set KNOWN_PROXIES / KNOWN_NETWORKS when the gateway sits behind a TLS proxy.
+builder.Services.AddSingleton<IClientKeyResolver>(TrustedProxyClientKeyResolver.FromConfiguration(builder.Configuration));
+
+// In-memory sliding window for the auth rate limit (ADR 0011). Reset on restart
+// is acceptable: it damps brute force, it is not an accounting ledger.
+var rateLimitWindowSeconds = AuthRateLimitMiddleware.ReadPositiveInt(
+    builder.Configuration,
+    AuthRateLimitMiddleware.WindowSecondsSetting,
+    AuthRateLimitMiddleware.WindowSecondsEnv,
+    AuthRateLimitMiddleware.DefaultWindowSeconds);
+builder.Services.AddSingleton(new SlidingWindowCounter(TimeSpan.FromSeconds(rateLimitWindowSeconds)));
+
 var app = builder.Build();
 
 app.UseMiddleware<CorrelationIdMiddleware>();
 
 app.UseSerilogRequestLogging();
+
+// Auth rate limit (ADR 0011): before everything else that touches the monolith,
+// and before the origin check — a flood of bad-origin requests is still a flood.
+app.UseMiddleware<AuthRateLimitMiddleware>();
 
 // In dev the gateway is the edge; trust forwarded headers from the browser/proxy chain.
 app.UseForwardedHeaders();
