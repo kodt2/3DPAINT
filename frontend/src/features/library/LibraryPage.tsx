@@ -26,6 +26,16 @@ export function LibraryPage() {
     previewRetried.current = false;
   }, [page]);
 
+  // After a delete shrinks the list the current page may no longer exist
+  // (the last model of the last page was removed); clamp back to the last
+  // existing page so the user is not stranded on an empty one.
+  useEffect(() => {
+    const totalPages = models.data?.totalPages;
+    if (totalPages !== undefined && page > totalPages) {
+      setPage(Math.max(1, totalPages));
+    }
+  }, [models.data, page]);
+
   function handlePreviewError() {
     if (previewRetried.current) {
       return;

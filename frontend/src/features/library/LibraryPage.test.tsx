@@ -31,6 +31,13 @@ const MODEL_B = {
   createdAt: '2026-11-24T11:00:00Z',
   thumbnailUrl: null,
 };
+const MODEL_C = {
+  id: 'c1',
+  name: 'third.glb',
+  sizeBytes: 512,
+  createdAt: '2026-11-24T09:00:00Z',
+  thumbnailUrl: null,
+};
 
 function pageDto(items: unknown[], page = 1, totalPages = 1) {
   return { items, page, pageSize: 20, totalCount: items.length, totalPages };
@@ -164,6 +171,50 @@ describe('LibraryPage (step 3c.2)', () => {
       'Не удалось удалить файлы в хранилище, попробуйте ещё раз.',
     );
     expect(screen.getByText('first.glb')).toBeDefined();
+  });
+
+  it('clamps back to an existing page when the last model of the last page is deleted', async () => {
+    // Server state: page 1 = [first.glb] on two pages; deleting third.glb
+    // (the only model of page 2) leaves a single page.
+    let thirdExists = true;
+    type GetOptions = { params?: { query?: Record<string, unknown> } };
+    type DeleteOptions = { params?: { path?: Record<string, unknown> } };
+    mockApi.GET.mockImplementation((path: string, opts?: GetOptions) => {
+      if (path === '/api/me') {
+        return Promise.resolve(okResult(ME));
+      }
+      const page = Number(opts?.params?.query?.page ?? 1);
+      const items = page === 1 ? [MODEL_A] : thirdExists ? [MODEL_C] : [];
+      return Promise.resolve(
+        okResult({
+          items,
+          page,
+          pageSize: 20,
+          totalCount: thirdExists ? 2 : 1,
+          totalPages: thirdExists ? 2 : 1,
+        }),
+      );
+    });
+    mockApi.DELETE.mockImplementation((_path: string, opts?: DeleteOptions) => {
+      if (opts?.params?.path?.id === 'c1') {
+        thirdExists = false;
+      }
+      return Promise.resolve(okResult(undefined, 204));
+    });
+    renderWithProviders(<LibraryPage />, ['/library']);
+
+    await screen.findByText('Стр. 1 из 2');
+    fireEvent.click(screen.getByRole('button', { name: 'Следующая →' }));
+    await screen.findByText('Стр. 2 из 2');
+
+    fireEvent.click(within(cardOf('third.glb')).getByRole('button', { name: 'Удалить' }));
+    await screen.findByText('Удалить модель?');
+    fireEvent.click(screen.getByRole('button', { name: 'Да, удалить' }));
+
+    // The refetched page 2 is empty (totalPages is now 1): the page is
+    // clamped to the first one and the remaining model is shown.
+    expect(await screen.findByText('first.glb')).toBeDefined();
+    expect(screen.queryByText('third.glb')).toBeNull();
   });
 
   it('refetches the list exactly once when a preview URL has expired', async () => {
