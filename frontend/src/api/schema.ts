@@ -248,6 +248,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["ConfigDto"];
+                        "application/json": components["schemas"]["ConfigDto"];
+                        "text/json": components["schemas"]["ConfigDto"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/models": {
         parameters: {
             query?: never;
@@ -432,6 +469,11 @@ export interface components {
             fullName?: string | null;
             /** Format: date */
             birthDate?: string | null;
+        };
+        ConfigDto: {
+            /** Format: int64 */
+            maxUploadBytes?: number;
+            allowedUploadExtensions?: string[] | null;
         };
         LoginRequest: {
             login: string;

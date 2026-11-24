@@ -1,0 +1,8 @@
+# E2E stand only (Makefile `e2e`): expose the monolith directly on
+# E2E_WEB_PORT so the upload-limit test can hit it without the Gateway and
+# verify that the monolith enforces MAX_UPLOAD_BYTES on its own.
+# Never used by the main or dev stacks.
+services:
+  web:
+    ports:
+      - "${E2E_WEB_PORT:-18081}:8080"

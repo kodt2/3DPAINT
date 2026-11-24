@@ -5,6 +5,7 @@ import { logout, meQueryKey, useMe } from '../../api/auth';
 import { deleteModel, modelsListKey, useModels, type Model } from '../../api/models';
 import { formatDate, formatSize } from '../../lib/format';
 import { ApiCheck } from '../api-check/ApiCheck';
+import { UploadPanel } from '../upload/UploadPanel';
 
 /**
  * Library screen (step 3c.2): the current user's models with presigned
@@ -54,6 +55,8 @@ export function LibraryPage() {
     <main className="page">
       <h1>Библиотека</h1>
       {me ? <p className="library-greeting">Здравствуйте, {me.login}!</p> : <p>Загрузка…</p>}
+
+      <UploadPanel />
 
       {models.isPending && <p>Загрузка списка моделей…</p>}
       {models.isError && (

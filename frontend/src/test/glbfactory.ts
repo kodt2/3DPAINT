@@ -290,6 +290,95 @@ export function buildCorruptGlb(): ArrayBuffer {
   return bytes.buffer;
 }
 
+/**
+ * A syntactically valid GLB with exactly `targetBytes` bytes (a multiple of
+ * 4, >= 256). The geometry is a fixed minimal quad (72 bytes of binary
+ * data); the exact size is reached by padding the JSON chunk with spaces
+ * (0x20), which the GLB spec allows and JSON parsers ignore.
+ *
+ * Used by the E2E "a file exactly at the limit passes the gateway" test
+ * (ADR 0015): the multipart body is larger than the file by the boundary
+ * and headers, so without the envelope slack the gateway would cut it.
+ */
+export function buildExactSizeGlb(targetBytes: number): ArrayBuffer {
+  if (targetBytes < 256 || targetBytes % 4 !== 0) {
+    throw new RangeError(`targetBytes must be >= 256 and a multiple of 4, got ${targetBytes}`);
+  }
+
+  const positionBytes = 4 * 12; // a quad
+  const indexBytes = 6 * 4; // two triangles
+  const binLength = positionBytes + indexBytes; // 72, %4 === 0
+
+  const jsonLength = targetBytes - 12 - 8 - 8 - binLength; // %4 === 0 by the guard
+  const json =
+    '{"asset":{"version":"2.0","generator":"3dpaint-e2e-exact-size"},"scene":0,'
+    + '"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],'
+    + '"meshes":[{"primitives":[{"attributes":{"POSITION":0},"indices":1}]}],'
+    + '"buffers":[{"byteLength":72}],'
+    + '"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":48,"target":34962},'
+    + '{"buffer":0,"byteOffset":48,"byteLength":24,"target":34963}],'
+    + '"accessors":[{"bufferView":0,"componentType":5126,"count":4,"type":"VEC3",'
+    + '"min":[0,0,0],"max":[1,1,0]},'
+    + '{"bufferView":1,"componentType":5125,"count":6,"type":"SCALAR"}]}';
+  if (json.length > jsonLength) {
+    throw new RangeError(`targetBytes too small to hold the GLB JSON: ${targetBytes}`);
+  }
+
+  const jsonChunk = new Uint8Array(jsonLength);
+  new TextEncoder().encodeInto(json, jsonChunk);
+  jsonChunk.fill(0x20, json.length); // space padding (spec: 0x20)
+
+  const out = new ArrayBuffer(targetBytes);
+  const bytes = new Uint8Array(out);
+  const view = new DataView(out);
+  view.setUint32(0, 0x46546c67, true); // magic 'glTF'
+  view.setUint32(4, 2, true); // glTF version
+  view.setUint32(8, targetBytes, true); // total length
+  view.setUint32(12, jsonLength, true); // JSON chunk length
+  view.setUint32(16, 0x4e4f534a, true); // 'JSON'
+  bytes.set(jsonChunk, 20);
+
+  const binOffset = 20 + jsonLength;
+  view.setUint32(binOffset, binLength, true); // BIN chunk length
+  view.setUint32(binOffset + 4, 0x004e4942, true); // 'BIN\0'
+
+  const positions = new Float32Array([0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0]);
+  const indices = new Uint32Array([0, 1, 2, 0, 2, 3]);
+  bytes.set(new Uint8Array(positions.buffer), binOffset + 8);
+  bytes.set(new Uint8Array(indices.buffer), binOffset + 8 + positionBytes);
+
+  return out;
+}
+
+/**
+ * A GLB with a fully valid container header (magic, version 2, consistent
+ * length — passes the server-side magic-byte validation, step 3c.4) but a
+ * garbage JSON chunk, so three.js's GLTFLoader.parse rejects it. Used by the
+ * viewer E2E for the friendly parse-error path.
+ */
+export function buildHeaderValidCorruptGlb(): ArrayBuffer {
+  const jsonBytes = new TextEncoder().encode('{"this is": not valid json,,}');
+  const jsonPad = (4 - (jsonBytes.length % 4)) % 4;
+  const jsonChunk = new Uint8Array(jsonBytes.length + jsonPad);
+  jsonChunk.set(jsonBytes);
+  jsonChunk.fill(0x20, jsonBytes.length); // space padding (spec: 0x20)
+
+  const totalLength = 12 + 8 + jsonChunk.length; // no BIN chunk
+  const out = new ArrayBuffer(totalLength);
+  const bytes = new Uint8Array(out);
+  const view = new DataView(out);
+  view.setUint32(0, 0x46546c67, true); // magic 'glTF'
+  view.setUint32(4, 2, true); // glTF version
+  view.setUint32(8, totalLength, true);
+  let offset = 12;
+  view.setUint32(offset, jsonChunk.length, true);
+  offset += 4;
+  view.setUint32(offset, 0x4e4f534a, true); // 'JSON'
+  offset += 4;
+  bytes.set(jsonChunk, offset);
+  return out;
+}
+
 function assembleGlb(json: object, bin: Uint8Array): ArrayBuffer {
   const jsonBytes = new TextEncoder().encode(JSON.stringify(json));
   const jsonPad = (4 - (jsonBytes.length % 4)) % 4;

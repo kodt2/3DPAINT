@@ -64,6 +64,8 @@ services:
       - Minio__UseSsl=false
       # Presigned URLs are signed with this endpoint so the browser can use them (TD-3).
       - PUBLIC_S3_ENDPOINT=${PUBLIC_S3_ENDPOINT:-http://localhost:${S3_PUBLIC_PORT:-9000}}
+      # Single upload limit shared with the Gateway (ADR 0015).
+      - MaxUploadBytes=${MAX_UPLOAD_BYTES:-104857600}
     depends_on:
       - db
       - storage

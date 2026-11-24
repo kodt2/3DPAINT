@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Text;
 using LoginAndReg.Models.Entities;
 using LoginAndReg.Models.Options;
@@ -17,10 +18,9 @@ public class FileStorageService : IFileStorageService
         ".stl", ".obj", ".step", ".stp", ".glb"
     };
 
-    private const long MaxFileSizeBytes = 500L * 1024L * 1024L;
-
     private readonly IMinioClient _minioClient;
     private readonly MinioOptions _options;
+    private readonly long _maxUploadBytes;
     private readonly AppDbContext _context;
 
     private readonly ILogger<FileStorageService> _logger;
@@ -29,10 +29,16 @@ public class FileStorageService : IFileStorageService
     // endpoint (TD-3). All data operations keep using the internal client.
     private IMinioClient? _presignClient;
 
-    public FileStorageService(IMinioClient minioClient, IOptions<MinioOptions> options, AppDbContext appDbContext, ILogger<FileStorageService> logger)
+    public FileStorageService(
+        IMinioClient minioClient,
+        IOptions<MinioOptions> options,
+        IOptions<UploadOptions> uploadOptions,
+        AppDbContext appDbContext,
+        ILogger<FileStorageService> logger)
     {
         _minioClient = minioClient;
         _options = options.Value;
+        _maxUploadBytes = uploadOptions.Value.MaxBytes;
         _context = appDbContext;
         _logger = logger;
     }
@@ -41,6 +47,12 @@ public class FileStorageService : IFileStorageService
     {
         _logger.LogInformation(">>> [UPLOAD START] User: {UserId}, FileName: {FileName}, Size: {FileSize} bytes",
             userId, file.FileName, file.Length);
+
+        // S3 paths already written; used to clean up orphans when the upload
+        // does not finish (client abort, thumbnail or DB failure) — an upload
+        // must not leave S3 objects without a DB record (step 3c.4).
+        string? uploadedPath = null;
+        string? uploadedThumbnailPath = null;
 
         try
         {
@@ -69,12 +81,17 @@ public class FileStorageService : IFileStorageService
 
                 await _minioClient.PutObjectAsync(putObjectArgs, cancellationToken);
             }
+
+            // From here the object exists in S3: any failure before the DB
+            // record is saved must delete it (see the catch blocks).
+            uploadedPath = storagePath;
             sw.Stop();
             _logger.LogInformation(">>> [MINIO] Upload finished in {ElapsedMs}ms. Path: {StoragePath}", sw.ElapsedMilliseconds, storagePath);
 
             _logger.LogInformation(">>> [THUMBNAIL] Creating thumbnail for {FileId}...", fileId);
             var thumbnailPath = await CreateAndUploadThumbnailAsync(userId, fileId, uniqueName, cancellationToken);
             _logger.LogDebug("Thumbnail uploaded to: {ThumbnailPath}", thumbnailPath);
+            uploadedThumbnailPath = thumbnailPath;
 
             var userFile = new UserFile
             {
@@ -97,12 +114,42 @@ public class FileStorageService : IFileStorageService
         catch (OperationCanceledException)
         {
             _logger.LogWarning(">>> [UPLOAD CANCELLED] User {UserId} cancelled the upload or connection was closed.", userId);
+            await CleanupOrphanObjectsAsync(uploadedPath, uploadedThumbnailPath);
             throw;
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, ">>> [UPLOAD ERROR] Failed to upload file for user {UserId}. Error: {Message}", userId, ex.Message);
+            await CleanupOrphanObjectsAsync(uploadedPath, uploadedThumbnailPath);
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Best-effort deletion of S3 objects written by an upload that did not
+    /// finish (no DB record). Runs only when at least one object was
+    /// written; a failed delete is logged, not thrown.
+    /// </summary>
+    private async Task CleanupOrphanObjectsAsync(string? objectPath, string? thumbnailPath)
+    {
+        foreach (var path in new[] { objectPath, thumbnailPath })
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                continue;
+            }
+
+            try
+            {
+                await _minioClient.RemoveObjectAsync(
+                    new RemoveObjectArgs().WithBucket(_options.BucketName).WithObject(path),
+                    CancellationToken.None);
+                _logger.LogInformation(">>> [CLEANUP] Removed orphan S3 object: {Path}", path);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, ">>> [CLEANUP] Failed to remove orphan S3 object: {Path}", path);
+            }
         }
     }
 
@@ -186,22 +233,82 @@ public class FileStorageService : IFileStorageService
         return _presignClient;
     }
 
-    private static void ValidateFile(IFormFile file)
+    private void ValidateFile(IFormFile file)
     {
         if (file.Length <= 0)
         {
             throw new InvalidOperationException("Файл пустой.");
         }
 
-        if (file.Length > MaxFileSizeBytes)
+        // Single limit shared with the Gateway (MAX_UPLOAD_BYTES, ADR 0015);
+        // 413 with a human-readable message (files far above the limit die
+        // earlier, at the body level, with a bare server response).
+        if (file.Length > _maxUploadBytes)
         {
-            throw new InvalidOperationException("Размер файла превышает 500 MB.");
+            throw new FileSizeLimitExceededException(_maxUploadBytes);
         }
 
         var extension = Path.GetExtension(file.FileName);
         if (string.IsNullOrWhiteSpace(extension) || !AllowedExtensions.Contains(extension))
         {
             throw new InvalidOperationException("Поддерживаются только STL, OBJ, GLB и STEP файлы.");
+        }
+
+        // The extension whitelist is not enough: a renamed corrupt file would
+        // pollute the library and break the viewer. GLB containers carry a
+        // self-describing header — verify it.
+        if (string.Equals(extension, ".glb", StringComparison.OrdinalIgnoreCase))
+        {
+            ValidateGlbFile(file);
+        }
+    }
+
+    private static void ValidateGlbFile(IFormFile file)
+    {
+        if (file.Length < 12)
+        {
+            throw new InvalidGlbFileException("Файл повреждён: GLB-файл слишком мал, чтобы содержать заголовок.");
+        }
+
+        Span<byte> header = stackalloc byte[12];
+        using var stream = file.OpenReadStream();
+        var read = 0;
+        while (read < 12)
+        {
+            var n = stream.Read(header[read..]);
+            if (n == 0)
+            {
+                break;
+            }
+
+            read += n;
+        }
+
+        if (read < 12)
+        {
+            throw new InvalidGlbFileException("Файл повреждён: GLB-файл слишком мал, чтобы содержать заголовок.");
+        }
+
+        if (header[0] != 'g' || header[1] != 'l' || header[2] != 'T' || header[3] != 'F')
+        {
+            throw new InvalidGlbFileException("Файл не является GLB: заголовок не соответствует контейнеру glTF.");
+        }
+
+        var version = BinaryPrimitives.ReadInt32LittleEndian(header.Slice(4, 4));
+        if (version != 2)
+        {
+            throw new InvalidGlbFileException($"Файл не является GLB: версия glTF {version} не поддерживается.");
+        }
+
+        var totalLength = BinaryPrimitives.ReadInt32LittleEndian(header.Slice(8, 4));
+        if (totalLength < 12)
+        {
+            throw new InvalidGlbFileException("Файл повреждён: длина в заголовке GLB некорректна.");
+        }
+
+        if (totalLength > file.Length)
+        {
+            throw new InvalidGlbFileException("Файл повреждён: длина в заголовке GLB больше размера файла.");
         }
     }
 
@@ -217,7 +324,17 @@ public class FileStorageService : IFileStorageService
 
         if (!exists)
         {
-            await _minioClient.MakeBucketAsync(new MakeBucketArgs().WithBucket(_options.BucketName), cancellationToken);
+            try
+            {
+                await _minioClient.MakeBucketAsync(new MakeBucketArgs().WithBucket(_options.BucketName), cancellationToken);
+            }
+            catch (Exception ex) when (ex.Message.Contains("Bucket already owned by you", StringComparison.Ordinal))
+            {
+                // A concurrent request created the bucket between the check
+                // and the create (fresh stand, parallel first uploads). The
+                // bucket exists and is ours — nothing to do.
+                _logger.LogInformation("Bucket '{Bucket}' was created concurrently; continuing.", _options.BucketName);
+            }
         }
     }
 

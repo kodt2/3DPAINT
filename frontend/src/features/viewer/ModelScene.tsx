@@ -40,7 +40,7 @@ export function ModelScene({
   return (
     <Canvas
       camera={{ fov: 45, near: 0.01, far: 1000, position: [1.2, 0.8, 1.2] }}
-      gl={{ antialias: true, powerPreference: 'high-performance', preserveDrawingBuffer: true }}
+      gl={{ antialias: true, powerPreference: 'high-performance' }}
       onCreated={({ gl, scene }) => {
         scene.background = BACKGROUND;
         gl.domElement.addEventListener('webglcontextlost', (event) => {
@@ -128,37 +128,45 @@ function CameraFit({
 }
 
 /**
- * Per-frame probe:
+ * Per-frame probe (step 3c.4: no preserveDrawingBuffer):
  * - mirrors renderer.info.memory.geometries into the wrapper's
  *   data-viewer-geometries attribute (leak test);
  * - sets data-viewer-drawn once a rendered frame actually differs from the
- *   background color (reads the preserved drawing buffer; the GLB test
- *   files are red, the background is dark).
+ *   background color.
+ *
+ * The pixel check must read the back buffer BEFORE the browser composites
+ * it: with preserveDrawingBuffer: false the buffer is cleared right after
+ * present, so sampling it in a separate effect/rAF would read an empty
+ * buffer. The probe therefore takes over the render loop (positive
+ * priority: r3f skips its own gl.render while any subscriber has a
+ * positive priority, and subscribers run in ascending priority order, so
+ * the camera/controls updates at priority 0 happen first). It renders the
+ * frame itself and reads the pixels in the same tick. From that point on it
+ * keeps doing the equivalent manual render — exactly what r3f's internal
+ * loop would do.
  */
 function SceneProbe({ wrapperRef }: { wrapperRef: MutableRefObject<HTMLDivElement | null> }) {
-  const { gl } = useThree();
   const drawn = useRef(false);
 
-  useFrame(() => {
+  useFrame((state) => {
+    state.gl.render(state.scene, state.camera);
+
     const wrapper = wrapperRef.current;
-    if (!wrapper) {
-      return;
-    }
-    const geometries = String(gl.info.memory.geometries);
-    if (wrapper.dataset.viewerGeometries !== geometries) {
+    const geometries = String(state.gl.info.memory.geometries);
+    if (wrapper && wrapper.dataset.viewerGeometries !== geometries) {
       wrapper.dataset.viewerGeometries = geometries;
     }
-    if (drawn.current) {
+    if (drawn.current || !wrapper) {
       return;
     }
 
-    const canvas = gl.domElement;
+    const canvas = state.gl.domElement;
     const width = canvas.width;
     const height = canvas.height;
     if (!width || !height) {
       return;
     }
-    const context = gl.getContext();
+    const context = state.gl.getContext();
     const region = 9;
     const pixels = new Uint8Array(region * region * 4);
     context.readPixels(
@@ -181,7 +189,7 @@ function SceneProbe({ wrapperRef }: { wrapperRef: MutableRefObject<HTMLDivElemen
         return;
       }
     }
-  });
+  }, 1);
 
   return null;
 }

@@ -15,6 +15,14 @@ export const E2E_BASE_URL =
   process.env.E2E_BASE_URL ??
   (process.env.WEB_PORT ? `http://localhost:${process.env.WEB_PORT}` : 'http://localhost:8080');
 
+/**
+ * The monolith's direct port (compose.e2e.yml, Makefile `e2e`). Used only
+ * by the upload-limit test that must verify the monolith enforces
+ * MAX_UPLOAD_BYTES without the Gateway. This is a node-side request (not a
+ * browser), so 127.0.0.1 is fine — the CSRF/Origin rules do not apply.
+ */
+export const E2E_MONOLITH_URL = process.env.E2E_MONOLITH_URL ?? 'http://127.0.0.1:18081';
+
 const baseURL = E2E_BASE_URL;
 
 export default defineConfig({

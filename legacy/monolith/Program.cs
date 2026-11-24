@@ -11,6 +11,7 @@ using Microsoft.AspNetCore.Http.Extensions;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.IdentityModel.Tokens;
 using Minio;
 using Npgsql;
@@ -25,10 +26,22 @@ if (string.IsNullOrWhiteSpace(connectionString))
     throw new InvalidOperationException("DefaultConnection is not configured.");
 }
 
+// Single upload limit (ADR 0015): the same MAX_UPLOAD_BYTES variable the
+// Gateway reads, so both edges reject the same sizes. Body-level limits get
+// a small slack for the multipart envelope; the exact file limit is
+// enforced in FileStorageService with a readable 413.
+var maxUploadBytes = builder.Configuration.GetValue("MaxUploadBytes", UploadOptions.DefaultMaxBytes);
+if (maxUploadBytes <= 0)
+{
+    throw new InvalidOperationException("MaxUploadBytes must be a positive number of bytes.");
+}
+
 builder.WebHost.ConfigureKestrel(options =>
 {
-    options.Limits.MaxRequestBodySize = 524_288_000;
+    options.Limits.MaxRequestBodySize = maxUploadBytes + UploadOptions.BodySlack;
 });
+
+builder.Services.Configure<UploadOptions>(options => options.MaxBytes = maxUploadBytes);
 
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseNpgsql(connectionString));
@@ -66,7 +79,7 @@ if (!string.IsNullOrWhiteSpace(publicS3Endpoint))
 builder.Services.Configure<FormOptions>(options =>
 {
     options.ValueLengthLimit = int.MaxValue;
-    options.MultipartBodyLengthLimit = 524_288_000;
+    options.MultipartBodyLengthLimit = maxUploadBytes + UploadOptions.BodySlack;
     options.MemoryBufferThreshold = int.MaxValue;
 });
 builder.Services.AddSingleton<IMinioClient>(_ =>

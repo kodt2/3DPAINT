@@ -1,4 +1,6 @@
 import { expect, test } from '@playwright/test';
+import { E2E_MONOLITH_URL } from '../playwright.config';
+import { buildExactSizeGlb, buildLargeGlb } from '../src/test/glbfactory';
 import { apiHeaders, baseUrl, registerViaUi, uniqueLogin, uploadModel } from './helpers';
 
 /**
@@ -6,6 +8,8 @@ import { apiHeaders, baseUrl, registerViaUi, uniqueLogin, uploadModel } from './
  * Gateway. Every test uses a fresh browser context and a unique login, so
  * tests never depend on each other or on leftover data.
  */
+
+test.describe.configure({ timeout: 60_000 });
 
 test('models uploaded by the user are listed in the library', async ({ page }) => {
   const login = uniqueLogin('e2e_lib');
@@ -194,4 +198,60 @@ test('pageSize beyond 100 is rejected with 400', async ({ page }) => {
     headers: await apiHeaders(page),
   });
   expect(response.status()).toBe(400);
+});
+
+test('the monolith rejects an over-limit file directly (413, without the gateway)', async ({
+  page,
+}) => {
+  // Straight to the monolith (compose.e2e.yml exposes it on E2E_WEB_PORT),
+  // bypassing the Gateway. A valid session is required on purpose: without
+  // the cookie the request dies with 401 before the body is even read, and
+  // the body-level limits never run. The file is ~33.9 MB: above the e2e
+  // stand limit (32 MiB), but below the body-level limit (limit + 1 MiB
+  // multipart headroom), so it reaches the app-level check and is rejected
+  // with a readable 413 ProblemDetails by the monolith itself.
+  const login = uniqueLogin('e2e_limit');
+  await registerViaUi(page, login);
+  await expect(page).toHaveURL(/\/spa\/library/);
+
+  const glb = buildLargeGlb({ vertexCount: 1_570_000, triangleCount: 1_256_000 });
+  const response = await page.request.post(`${E2E_MONOLITH_URL}/api/files/upload`, {
+    headers: await apiHeaders(page),
+    multipart: {
+      file: { name: 'big.glb', mimeType: 'model/gltf-binary', buffer: Buffer.from(glb) },
+    },
+  });
+  expect(response.status()).toBe(413);
+  const body = (await response.json().catch(() => null)) as { title?: string } | null;
+  expect(body?.title).toBe('File too large');
+});
+
+test('a file exactly at the limit passes the gateway (envelope slack, ADR 0015)', async ({
+  page,
+}) => {
+  // The body-level limit applies to the whole multipart body (file bytes +
+  // boundary/headers), so a file of exactly MAX_UPLOAD_BYTES must still pass
+  // the Gateway: both edges use the limit + 1 MiB envelope slack and the
+  // monolith's app-level check (file size vs the limit) is authoritative.
+  // Without the slack this request would die with a bare 413 in the Gateway.
+  const login = uniqueLogin('e2e_exact');
+  await registerViaUi(page, login);
+  await expect(page).toHaveURL(/\/spa\/library/);
+
+  const config = (await (
+    await page.request.get(`${baseUrl}/api/config`)
+  ).json()) as { maxUploadBytes: number };
+  const glb = buildExactSizeGlb(config.maxUploadBytes);
+  expect(new Uint8Array(glb).length).toBe(config.maxUploadBytes);
+
+  const response = await page.request.post(`${baseUrl}/api/files/upload`, {
+    headers: await apiHeaders(page),
+    multipart: {
+      file: { name: 'exact-limit.glb', mimeType: 'model/gltf-binary', buffer: Buffer.from(glb) },
+    },
+  });
+  expect(response.status()).toBe(200);
+  const body = (await response.json()) as { fileName: string; fileSize: number };
+  expect(body.fileName).toBe('exact-limit.glb');
+  expect(body.fileSize).toBe(config.maxUploadBytes);
 });
