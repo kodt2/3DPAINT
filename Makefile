@@ -15,13 +15,20 @@ DOTNET_SDK_10_IMG := mcr.microsoft.com/dotnet/sdk:10.0
 E2E_PORT ?= 18090
 E2E_S3_PORT ?= 19000
 E2E_FILER_PORT ?= 18888
+# The monolith is exposed directly on this port (compose.e2e.yml) so the
+# upload-limit test can verify it enforces MAX_UPLOAD_BYTES without the
+# Gateway. The stand runs with a small upload limit (32 MiB) so the
+# over-limit test files stay a few tens of MB.
+E2E_WEB_PORT ?= 18081
+E2E_MAX_UPLOAD_BYTES := 33554432
 # Environment variables are prepended to the compose command: they take
 # precedence over infra/.env and apply only to this stand. The S3 filer UI
 # port (a dev convenience) gets its own published port so the stand can run
 # alongside the main stack.
 COMPOSE_E2E := WEB_PORT=$(E2E_PORT) S3_PUBLIC_PORT=$(E2E_S3_PORT) \
     S3_FILER_PORT=$(E2E_FILER_PORT) \
-    RATE_LIMIT_REQUESTS_PER_MINUTE=100 $(COMPOSE) -p 3dpaint-e2e
+    RATE_LIMIT_REQUESTS_PER_MINUTE=100 MAX_UPLOAD_BYTES=$(E2E_MAX_UPLOAD_BYTES) \
+    $(COMPOSE) -p 3dpaint-e2e -f infra/compose.e2e.yml
 E2E_DOWN := $(COMPOSE) -p 3dpaint-e2e down --volumes --remove-orphans
 
 .PHONY: up up-dev down logs build test e2e
@@ -64,6 +71,6 @@ e2e: ## Run Playwright against a throwaway stack (own ports, raised rate limit)
 		exit 1; \
 	fi
 	@status=0; \
-	(cd frontend && E2E_BASE_URL=http://localhost:$(E2E_PORT) S3_FILER_PORT=$(E2E_S3_PORT) npx playwright test) || status=$$?; \
+	(cd frontend && E2E_BASE_URL=http://localhost:$(E2E_PORT) S3_FILER_PORT=$(E2E_S3_PORT) E2E_MONOLITH_URL=http://127.0.0.1:$(E2E_WEB_PORT) npx playwright test) || status=$$?; \
 	$(E2E_DOWN); \
 	exit $$status

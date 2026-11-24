@@ -17,10 +17,9 @@ public class FileStorageService : IFileStorageService
         ".stl", ".obj", ".step", ".stp", ".glb"
     };
 
-    private const long MaxFileSizeBytes = 500L * 1024L * 1024L;
-
     private readonly IMinioClient _minioClient;
     private readonly MinioOptions _options;
+    private readonly long _maxUploadBytes;
     private readonly AppDbContext _context;
 
     private readonly ILogger<FileStorageService> _logger;
@@ -29,10 +28,16 @@ public class FileStorageService : IFileStorageService
     // endpoint (TD-3). All data operations keep using the internal client.
     private IMinioClient? _presignClient;
 
-    public FileStorageService(IMinioClient minioClient, IOptions<MinioOptions> options, AppDbContext appDbContext, ILogger<FileStorageService> logger)
+    public FileStorageService(
+        IMinioClient minioClient,
+        IOptions<MinioOptions> options,
+        IOptions<UploadOptions> uploadOptions,
+        AppDbContext appDbContext,
+        ILogger<FileStorageService> logger)
     {
         _minioClient = minioClient;
         _options = options.Value;
+        _maxUploadBytes = uploadOptions.Value.MaxBytes;
         _context = appDbContext;
         _logger = logger;
     }
@@ -186,16 +191,19 @@ public class FileStorageService : IFileStorageService
         return _presignClient;
     }
 
-    private static void ValidateFile(IFormFile file)
+    private void ValidateFile(IFormFile file)
     {
         if (file.Length <= 0)
         {
             throw new InvalidOperationException("Файл пустой.");
         }
 
-        if (file.Length > MaxFileSizeBytes)
+        // Single limit shared with the Gateway (MAX_UPLOAD_BYTES, ADR 0015);
+        // 413 with a human-readable message (the body-level checks above
+        // this point can only produce a bare 413).
+        if (file.Length > _maxUploadBytes)
         {
-            throw new InvalidOperationException("Размер файла превышает 500 MB.");
+            throw new FileSizeLimitExceededException(_maxUploadBytes);
         }
 
         var extension = Path.GetExtension(file.FileName);
@@ -217,7 +225,17 @@ public class FileStorageService : IFileStorageService
 
         if (!exists)
         {
-            await _minioClient.MakeBucketAsync(new MakeBucketArgs().WithBucket(_options.BucketName), cancellationToken);
+            try
+            {
+                await _minioClient.MakeBucketAsync(new MakeBucketArgs().WithBucket(_options.BucketName), cancellationToken);
+            }
+            catch (Exception ex) when (ex.Message.Contains("Bucket already owned by you", StringComparison.Ordinal))
+            {
+                // A concurrent request created the bucket between the check
+                // and the create (fresh stand, parallel first uploads). The
+                // bucket exists and is ours — nothing to do.
+                _logger.LogInformation("Bucket '{Bucket}' was created concurrently; continuing.", _options.BucketName);
+            }
         }
     }
 

@@ -56,8 +56,10 @@ public class UserFilesController : ControllerBase
         return Ok(response);
     }
 
+    // No [RequestSizeLimit] here: the limit is configured once from
+    // MAX_UPLOAD_BYTES (ADR 0015) and enforced by Kestrel/FormOptions
+    // (body level) and by FileStorageService (file level, readable 413).
     [HttpPost("upload")]
-    [RequestSizeLimit(524_288_000)]
     public async Task<IActionResult> Upload([FromForm] IFormFile? file, CancellationToken cancellationToken)
     {
         if (file is null)
@@ -88,6 +90,13 @@ public class UserFilesController : ControllerBase
                 previewUrl = fileUrl,
                 thumbnailUrl
             });
+        }
+        catch (FileSizeLimitExceededException ex)
+        {
+            return Problem(
+                detail: ex.Message,
+                title: "File too large",
+                statusCode: StatusCodes.Status413PayloadTooLarge);
         }
         catch (InvalidOperationException ex)
         {
