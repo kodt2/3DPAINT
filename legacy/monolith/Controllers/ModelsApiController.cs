@@ -75,8 +75,11 @@ namespace LoginAndReg.Controllers
                 .ThenByDescending(f => f.id);
 
             var totalCount = await query.CountAsync(cancellationToken);
+            // long + clamp: a crafted large page must not overflow the
+            // int skip count; beyond the last page the result is just empty.
+            var skip = Math.Min((long)(pageNumber - 1) * pageSizeValue, int.MaxValue);
             var files = await query
-                .Skip((pageNumber - 1) * pageSizeValue)
+                .Skip((int)skip)
                 .Take(pageSizeValue)
                 .ToListAsync(cancellationToken);
 
