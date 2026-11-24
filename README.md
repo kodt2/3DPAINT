@@ -74,9 +74,18 @@ make up   # = docker compose -f infra/compose.yml -f infra/compose.override.yml 
 | всё остальное | монолит (Razor-страницы, статика) |
 
 SPA доступен по `http://localhost:${WEB_PORT}/spa/`: `/spa/login`,
-`/spa/register` и защищённый `/spa/library` (пока заглушка, список моделей —
-в подшаге 3c.2). Старые Razor-страницы остаются на прежних URL
-(`/`, `/Account/Auth`, `/Home/Index`).
+`/spa/register` и защищённый `/spa/library` (с шага 3c.2: список моделей,
+presigned-превью, пагинация, удаление с подтверждением). Старые Razor-страницы
+остаются на прежних URL (`/`, `/Account/Auth`, `/Home/Index`).
+
+**Библиотека (с шага 3c.2, ADR 0013).** SPA ходит в новый JSON-эндпоинт
+монолита `/api/models` (`GET` список с `page`/`pageSize` 1..100, `GET`/{id}
+деталь с presigned-ссылками, `DELETE`/{id} — запись + S3-объекты, повторный
+`DELETE` идемпотентен). Владелец проверяется в самом SQL
+(`id = @id AND user_id = @userId`): чужой `id` — обычный `404`. DTO не
+несут внутренних хостов, S3-ключей как отдельных полей и данных владельца.
+Маршрут совпадает с целевым API из ARCHITECTURE.md §7.2 — в Фазе 5 меняется
+только бэкенд. Старые Razor-эндпоинты `/api/files/**` не тронуты.
 
 Режим HMR для работы над фронтендом (опционально):
 
@@ -99,7 +108,7 @@ tестового стенда: свой compose-проект `3dpaint-e2e`, с�
 `RATE_LIMIT_REQUESTS_PER_MINUTE=100`). Основной стек и production-дефолты
 не трогаются, а по завершении стенд гасится вместе со своими данными —
 прогоны можно повторять, не упираясь в лимит. Если порты заняты:
-`make e2e E2E_PORT=18190 E2E_S3_PORT=19100`. Ручной прогон против уже
+`make e2e E2E_PORT=18190 E2E_S3_PORT=19100 E2E_FILER_PORT=18898` Ручной прогон против уже
 поднятого стека: `cd frontend && E2E_BASE_URL=http://localhost:${WEB_PORT} npx playwright test`
 (лимит входа 10/60 с может сработать при повторных прогонах).
 
