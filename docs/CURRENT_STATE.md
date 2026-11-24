@@ -76,6 +76,7 @@
 - CORS в коде не настроен; rate-limiting отсутствует.
 - (с шага 3b.0) Middleware монолита: state-changing запрос (`POST/PUT/PATCH/DELETE`) на `/api/**` **с телом** обязан приходить с `Content-Type: application/json`, иначе `415` (ProblemDetails). Исключение — эндпоинты с form-параметрами (`POST /api/files/upload`); мутации без тела не проверяются (см. ADR 0011 §6).
 - (с шага 3b.0) OpenAPI (`/swagger/**`) отдаётся **только при `ASPNETCORE_ENVIRONMENT=Development`**; в Production-подобных стэках — `404`. Dev-стэк задаёт окружение через `infra/.env` (`ASPNETCORE_ENVIRONMENT=Development`); настройка `OpenApi:Enabled` удалена.
+- (с шага 3c.1) JSON auth API для SPA (`Controllers/AuthApiController.cs`, `[AllowAnonymous]`): `POST /api/auth/login` (`{login, password}` → `AuthUserDto`, неудача — `401` ProblemDetails), `POST /api/auth/register` (`{fullName, birthDate, login, password}` → `201` + `AuthUserDto`; занятый login — `409`; валидация — `400` с `errors`), `POST /api/auth/logout` (`204`, удаляет cookie). `GET /api/me` теперь типизирован (`AuthUserDto`, `401` — ProblemDetails). Парольные проверки идут через тот же `IAccountService`, что и Razor-экраны (хранирование паролей не менялось).
 
 ## 4. Механизм аутентификации
 
@@ -86,7 +87,8 @@
 - Сервер также принимает стандартный заголовок `Authorization: Bearer` (дефолт JwtBearer).
 - `[Authorize]` — на `HomeController` и `UserFilesController`; cookie подставляется в заголовок через `JwtBearerOptions.OnMessageReceived`.
 - **Баг UI (TD-4):** поле «Email» формы логина имеет `type="email"`, а при регистрации логин — произвольная строка (`type="text"`). Пользователь с не-email логином **не может войти через UI** (клиентская валидация email блокирует отправку).
-- **Нет logout**: cookie живёт 60 минут; «Выйти» не реализован.
+- (с шага 3c.1) Опции cookie собраны в одном месте — `Services/AuthCookie.cs` (`AuthCookie.CreateOptions()`: имя `jwt`, `HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/`); Razor-контроллер и JSON `AuthApiController` используют их оба, флаги совпадают.
+- (с шага 3c.1) Logout реализован как JSON-эндпоинт `POST /api/auth/logout` (удаляет cookie) — для SPA. Razor-кнопки «Выйти» по-прежнему нет (TD-6).
 
 ## 5. Где и как хранятся загруженные 3D-файлы
 
@@ -223,7 +225,7 @@ Layout'ы: `_HomeLayout` (только Google Fonts + `css/home-dashboard.css`),
 | Экран SPA | Нужные JSON-эндпоинты монолита | Статус (шаг 3a) |
 |---|---|---|
 | `/spa/` (каркас, connection-check) | `GET /api/health` (публичный), `GET /api/me` (JWT) | ✅ добавлены (`ApiStatusController`) |
-| Вход/регистрация (E1) | `POST /api/auth/login`, `POST /api/auth/register`, `POST /api/auth/logout`, `GET /api/me` | ⏳ делать в 3c (пока SPA может логиниться legacy-эндпоинтами `/Account/Login`/`Register` — form-encoded; logout отсутствует, TD-6) |
+| Вход/регистрация (E1) | `POST /api/auth/login`, `POST /api/auth/register`, `POST /api/auth/logout`, `GET /api/me` | ✅ сделано в 3c.1 (`AuthApiController`, типизированные OpenAPI-ответы; SPA-экраны `/spa/login`, `/spa/register`) |
 | Библиотека моделей (E2) | `GET /api/files` (уже есть), `POST /api/files/upload` (уже есть, но **исключён из OpenAPI** — Swashbuckle не моделирует `[FromForm] IFormFile`), `DELETE /api/files/{id}`, `GET /api/files/{id}` (метаданные+свежие presigned) | ⏳ `DELETE`/`GET {id}` — новые, сделать при переносе |
 | 3D-вьюер модели (**новая функция**, не перенос) | `GET /api/files/{id}/preview` (свежий presigned GET) | ⏳ сделать вместе со вьюером (3c) |
 | Paint (ADR 0010, Фаза 6.5) | `POST /api/files/{id}/textures` (версии текстур), `GET /api/files/{id}/textures` | ⏳ не в Фазе 3 |
@@ -232,8 +234,14 @@ Layout'ы: `_HomeLayout` (только Google Fonts + `css/home-dashboard.css`),
 
 В текущем Razor-UI «превью» карточек — это SVG-заглушки (`<img class=asset-thumb>`), т.к. монолит всегда создаёт thumbnail; Three.js-ветка в `home-dashboard.js` для загруженных файлов **не выполняется**. Проверено (шаг 3a): `GLTFLoader` грузит пользовательский GLB напрямую из S3 через presigned GET из оригина Gateway — 2 меша, UV на месте, рендерится. Реальный 3D-вьюер (Three.js / `@react-three/fiber`) добавляется в `frontend/` как новая функция при переносе (3c), оценка отдельно.
 
-### 11.5 Состояние SPA-каркаса (после шага 3a)
+### 11.5 Состояние SPA (после шага 3c.1)
 
-`frontend/`: React 19 + Vite 7 + TS strict, ESLint 9 + Prettier, Vitest (jsdom), `openapi-fetch` + сгенерированные типы (`npm run gen:api` из OpenAPI монолита, `Swashbuckle 7.2.0`, только `/api/**`). Dockerfile multi-stage → nginx (SPA-fallback, immutable-кэш `/assets/`). Сервисы compose: `frontend` (nginx) и `frontend-dev` (Vite HMR, профиль `dev`, `make up-dev`). Маршруты Gateway: `/api/**` → монолит, `/assets/**`, `/spa/**` → frontend, остальное → монолит (ADR 0011). (с шага 3b.0) До reverse proxy в Gateway работает `OriginCheckMiddleware`: мутации `/api/**` без `Origin`/`Referer` совпадающего с публичным origin Gateway отклоняются `403` ProblemDetails (ADR 0011 §6). Экран-заглушка показывает результат `GET /api/health` и `GET /api/me`. **Экраны Razor не переносились и не удалялись.**
+`frontend/`: React 19 + Vite 7 + TS strict, ESLint 9 + Prettier, Vitest (jsdom) + Playwright (E2E), `openapi-fetch` + сгенерированные типы (`npm run gen:api` из OpenAPI монолита, `Swashbuckle 7.2.0`, только `/api/**`). Dockerfile multi-stage → nginx (SPA-fallback, immutable-кэш `/assets/`). Сервисы compose: `frontend` (nginx) и `frontend-dev` (Vite HMR, профиль `dev`, `make up-dev`). Маршруты Gateway: `/api/**` → монолит, `/assets/**`, `/spa/**` → frontend, остальное → монолит (ADR 0011). (с шага 3b.0) До reverse proxy в Gateway работает `OriginCheckMiddleware`: мутации `/api/**` без `Origin`/`Referer` совпадающего с публичным origin Gateway отклоняются `403` ProblemDetails (ADR 0011 §6).
+
+(с шага 3c.1) Экраны: `/spa/login` и `/spa/register` (JSON-эндпоинты `AuthApiController`), защищённый `/spa/library` (пока заглушка «Здравствуйте, …» + logout; список моделей придёт в 3c.2), `/spa/` — редирект по результату `GET /api/me`. Состояние авторизации — TanStack Query (`useMe()`, `queryKey ['me']`), маршруты — React Router (`basename="/spa"`), ошибки — из ProblemDetails (`detail` + полевые `errors`). Тесты: Vitest (unit, `MemoryRouter`, моки `openapi-fetch`) и Playwright (E2E `e2e/auth.spec.ts`, базовый URL — `http://localhost:{WEB_PORT}`, т.е. через Gateway; `npm run test:e2e`, `WEB_PORT=<порт> npx playwright test`).
+
+(с шага 3c.1) Origin-проверка Gateway усилена: сравнение разбором URL (`scheme + host + порт`), не строковым префиксом — `Referer: http://localhost:8080.evil.com` → `403`, `https://example.com:443` == `https://example.com`, литерал `Origin: null` → `403`; найден и исправлен баг: env `PUBLIC_ORIGIN` читался как `PublicOrigin` (case-sensitive lookup в .NET 10) и молча игнорировался — регрессионный тест добавлен. Dev-профиль (`make up-dev`) через `infra/compose.dev.yml` добавляет в `PUBLIC_ORIGIN` origin Vite-сервера `http://localhost:5173` (браузер ходит в Vite, `/api` проксируется в Gateway); в production-стек этот origin не попадает (проверено: `make up` + `Origin: http://localhost:5173` → `403`).
+
+**Экраны Razor не переносились и не удалялись.**
 
 Скриншот: `docs/screenshots/step3a-spa-stub.png`.

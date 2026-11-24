@@ -9,9 +9,17 @@ namespace Gateway.Middleware;
 /// fallback) whose origin matches the gateway's public origin. GET/HEAD/OPTIONS
 /// are not state-changing and pass through untouched.
 ///
+/// Origins are compared as parsed URLs (scheme + host + effective port), never
+/// as string prefixes: "http://localhost:8080.evil.com" is not an origin that
+/// starts with "http://localhost:8080", and "https://example.com:443" equals
+/// "https://example.com" (443 is the default port). The literal Origin value
+/// "null" (opaque origins) does not parse as a URL and is rejected.
+///
 /// The allowed origin list comes from the <c>PublicOrigin</c> setting
 /// (env <c>PUBLIC_ORIGIN</c>, comma-separated). When it is not configured the
 /// default is <c>http://localhost:{WEB_PORT}</c> (WEB_PORT defaults to 8080).
+/// In the dev profile (make up-dev) the Vite dev server origin
+/// (http://localhost:5173) is added via infra/compose.dev.yml.
 /// See ADR 0011 («CSRF-защита») for the rationale.
 /// </summary>
 public sealed class OriginCheckMiddleware
@@ -29,9 +37,34 @@ public sealed class OriginCheckMiddleware
         _allowedOrigins = ResolveAllowedOrigins(configuration);
     }
 
+    /// <summary>
+    /// Normalizes an origin to "scheme://host:port" with the effective port
+    /// (default ports included: http→80, https→443). Returns null when the
+    /// value is not an absolute http(s) URL — including the literal "null".
+    /// </summary>
+    internal static string? NormalizeOrigin(string candidate)
+    {
+        if (!Uri.TryCreate(candidate, UriKind.Absolute, out var uri))
+        {
+            return null;
+        }
+
+        if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)
+        {
+            return null;
+        }
+
+        return $"{uri.Scheme}://{uri.IdnHost}:{uri.Port}";
+    }
+
     private static IReadOnlyList<string> ResolveAllowedOrigins(IConfiguration configuration)
     {
-        var raw = configuration[AllowedOriginsSetting];
+        // Two spellings on purpose: "PublicOrigin" is the appsettings key,
+        // "PUBLIC_ORIGIN" is the environment variable name (the environment
+        // provider registers env vars under their exact name, not under
+        // PascalCase keys — the lookup is case-sensitive in .NET 10).
+        // Reading only one of them would silently ignore the other.
+        var raw = configuration[AllowedOriginsSetting] ?? configuration["PUBLIC_ORIGIN"];
         if (string.IsNullOrWhiteSpace(raw))
         {
             var port = configuration[WebPortSetting];
@@ -40,13 +73,14 @@ public sealed class OriginCheckMiddleware
                 webPort = DefaultWebPort;
             }
 
-            return [$"http://localhost:{webPort}"];
+            return [NormalizeOrigin($"http://localhost:{webPort}")!];
         }
 
         return raw
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Select(origin => origin.TrimEnd('/'))
-            .Where(origin => origin.Length > 0)
+            .Select(NormalizeOrigin)
+            .Where(origin => origin is not null)
+            .Cast<string>()
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
     }
@@ -104,15 +138,17 @@ public sealed class OriginCheckMiddleware
     }
 
     /// <summary>
-    /// Origin of the requesting page: the Origin header, or the origin part of
-    /// the Referer when Origin is absent. Null when neither is usable.
+    /// Origin of the requesting page as a normalized "scheme://host:port"
+    /// string: the Origin header, or the origin part of the Referer when
+    /// Origin is absent. Null when neither is a usable absolute http(s) URL
+    /// (absent headers, or the literal "null" origin).
     /// </summary>
     private static string? ExtractRequestOrigin(HttpRequest request)
     {
         var origin = request.Headers.Origin.ToString();
         if (!string.IsNullOrWhiteSpace(origin))
         {
-            return origin.TrimEnd('/');
+            return NormalizeOrigin(origin);
         }
 
         var referer = request.Headers.Referer.ToString();
@@ -121,11 +157,6 @@ public sealed class OriginCheckMiddleware
             return null;
         }
 
-        if (!Uri.TryCreate(referer, UriKind.Absolute, out var uri))
-        {
-            return null;
-        }
-
-        return $"{uri.Scheme}://{uri.Authority}";
+        return NormalizeOrigin(referer);
     }
 }

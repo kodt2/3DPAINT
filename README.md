@@ -73,9 +73,10 @@ make up   # = docker compose -f infra/compose.yml -f infra/compose.override.yml 
 | `/spa/**` | frontend (префикс снимается, SPA-fallback) |
 | всё остальное | монолит (Razor-страницы, статика) |
 
-SPA доступен по `http://localhost:${WEB_PORT}/spa/` — пока это заглушка с
-проверкой связи `/api/health` и `/api/me`. Старые Razor-страницы остаются на
-прежних URL (`/`, `/Account/Auth`, `/Home/Index`).
+SPA доступен по `http://localhost:${WEB_PORT}/spa/`: `/spa/login`,
+`/spa/register` и защищённый `/spa/library` (пока заглушка, список моделей —
+в подшаге 3c.2). Старые Razor-страницы остаются на прежних URL
+(`/`, `/Account/Auth`, `/Home/Index`).
 
 Режим HMR для работы над фронтендом (опционально):
 
@@ -83,8 +84,19 @@ SPA доступен по `http://localhost:${WEB_PORT}/spa/` — пока эт�
 make up-dev   # поднимает профиль `dev`: Vite-сервер на 127.0.0.1:5173, Gateway шлёт /spa/** на него
 ```
 
+В dev-режиме можно работать и напрямую через Vite:
+`http://localhost:5173/spa/` (`/api` Vite проксирует в Gateway). Для этого
+`make up-dev` (через `infra/compose.dev.yml`) добавляет origin Vite
+`http://localhost:5173` в разрешённые для CSRF-проверки Gateway; в
+production-стек этот origin не попадает (ADR 0011 §6.1).
+
+Тесты фронтенда: `npm run lint`, `npm test` (Vitest), `npm run build`,
+E2E — `npm run test:e2e` (Playwright, ходит **через Gateway**;
+базовый URL — `E2E_BASE_URL` или `http://localhost:${WEB_PORT}`,
+например `WEB_PORT=18080 npx playwright test`).
+
 Типы API-клиента генерируются из OpenAPI монолита (`npm run gen:api` в
-`frontend/`, требует работающий стэк; upload-эндпоинт в документе пока не
+`frontend/`, требует работающий dev-стэк; upload-эндпоинт в документе пока не
 описан — TD-22).
 
 ## Публичный S3 (presigned-ссылки и браузерная загрузка)
@@ -119,3 +131,30 @@ make up-dev   # поднимает профиль `dev`: Vite-сервер на 
 
 Новые сервисы (Model Service, Фаза 5) используют тот же паттерн: внутренние
 операции — по внутреннему эндпоинту, presigned — по публичному.
+
+## Деплой на сервер (production-паттерн)
+
+Стэк поднимается тем же `make up`, но **с server-конфигурацией** в
+`infra/.env` (локальный `infra/.env` из dev-машины на сервер **не копировать**
+— в нём `ASPNETCORE_ENVIRONMENT=Development`, и тогда в проде будет доступен
+Swagger UI и включён dev-профиль OpenAPI):
+
+| Переменная | Значение на сервере | Зачем |
+|---|---|---|
+| `ASPNETCORE_ENVIRONMENT` | `Production` | OpenAPI `/swagger` → `404`, без dev-диагностики |
+| `PUBLIC_ORIGIN` | `https://<домен>` (тот же, под которым открыт сайт) | CSRF-проверка мутаций `/api/**` в Gateway (ADR 0011 §6); по умолчанию (`пусто`) разрешён только `http://localhost:{WEB_PORT}` — из браузера по домену мутации получат `403` |
+| `S3_CORS_ORIGINS` | тот же origin, что в `PUBLIC_ORIGIN` | браузерные загрузки/скачивания через presigned URL (раздел «Публичный S3») |
+| `WEB_PORT` | публичный порт Gateway (обычно `80` за TLS-прокси) | дефолтный origin и порты compose |
+| секреты (`JWT_SECRET`, `MINIO_ROOT_PASSWORD`, `DB_PASSWORD`) | настоящие, не dev-значения из `.env.example` | — |
+
+Важные детали:
+
+* TLS режет внешний reverse proxy (nginx/Caddy), он обязан передавать
+  `X-Forwarded-Proto: https` — cookie `jwt` ставится с флагом `Secure`,
+  без https-контекста браузер его не сохранит (`UseForwardedHeaders` в
+  Gateway подключён).
+* `infra/compose.dev.yml` и `make up-dev` на сервере **не использовать**
+  (dev-оверлей расширяет разрешённые origins Vite-сервером).
+* Проверка после деплоя: `curl -H 'Origin: https://<домен>' -X POST
+  https://<домен>/api/auth/login ...` → не `403`; `https://<домен>/swagger` →
+  `404`.

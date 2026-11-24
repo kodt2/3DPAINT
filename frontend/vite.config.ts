@@ -2,11 +2,12 @@
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 
-// base:
-//  - production build (nginx in Docker): "/", the Gateway serves the SPA under
-//    /spa/** and the hashed assets under /assets/** (ADR 0011);
-//  - dev server: "/spa/" so the page works both directly (http://host:5173/spa/)
-//    and through the Gateway route /spa/** (prefix stripped).
+// base: "/" for both the production build and the dev server:
+//  - production (nginx in Docker): the Gateway serves the SPA under /spa/**
+//    (prefix stripped) and the hashed assets under /assets/** (ADR 0011);
+//  - dev server: the page works both directly (http://host:5173/spa/** — the
+//    SPA fallback serves index.html) and through the Gateway route /spa/**
+//    (prefix stripped).
 const base = process.env.VITE_BASE ?? '/';
 
 export default defineConfig({
@@ -28,5 +29,8 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],
+    // App tests only: Playwright specs (e2e/) are not Vitest tests, and the
+    // glob must not wander into node_modules.* trees.
+    include: ['src/**/*.{test,spec}.ts?(x)'],
   },
 });

@@ -148,6 +148,40 @@ Lax покрывает большинство сценариев (кросс-с�
 допускается, для мутаций `/api/**` такой клиент обязан передать один из
 разрешённых Origin (документировано в отчёте шага 3b.0).
 
+### 6.1 Усиление (шаг 3c.1, 2026-11-24)
+
+1. **Сравнение origins — разбор URL, не строковый префикс.** И запросный,
+   и разрешённые origins нормализуются в `scheme://host:порт` (порт —
+   эффективный: `http→80`, `https→443`). Поэтому `Referer:
+   http://localhost:8080.evil.com/...` **не** проходит как «начинается с
+   `http://localhost:8080`» (`403`), а `https://example.com` и
+   `https://example.com:443` — один и тот же origin. Литеральное значение
+   `Origin: null` (opaque origins: sandbox-iframe, file://) не парсится как
+   http(s) URL и отклоняется. Непарсируемые значения `Referer` middleware
+   не падает — просто не находит совпадения.
+2. **Баг: env `PUBLIC_ORIGIN` молча игнорировался.** Middleware читал
+   `configuration["PublicOrigin"]`, а environment-provider регистрирует env
+   под точным именем `PUBLIC_ORIGIN`; в .NET 10 lookup по ключу
+   case-sensitive, поэтому env-переменная не находилась, и Gateway
+   тихо работал с дефолтным origin. Найден живьём при вводе dev-origina
+   (Vite): `Origin: http://localhost:5173` давал `403` при корректно
+   выставленном env. Исправление — чтение обоих вариантов
+   (`PublicOrigin` для appsettings, `PUBLIC_ORIGIN` для env) +
+   регрессионный тест `PublicOrigin_env_var_spelling_is_read`.
+3. **Dev-origin для Vite — только через `infra/compose.dev.yml`.**
+   `make up-dev` (профиль `dev`) поднимает Vite-сервер на
+   `127.0.0.1:5173`: браузер ходит в Vite напрямую, `/api` Vite проксирует
+   в Gateway, и Origin остаётся `http://localhost:5173`. Dev-оверлей
+   добавляет этот origin в `PUBLIC_ORIGIN` Gateway
+   (`http://localhost:{WEB_PORT},http://localhost:5173`). Файл подключается
+   **только** в `make up-dev`; в production-стек origin Vite не попадает
+   (проверено: обычный `make up` + `Origin: http://localhost:5173` → `403`).
+   В production `PUBLIC_ORIGIN` задаётся доменом приложения (README,
+   «Деплой на сервер»). В dev-профиле Vite работает с `base: "/"`
+   (`VITE_BASE` не задаётся — раньше `/spa/` ломал вход через Gateway, где
+   префикс снимается): и прямой вход `http://localhost:5173/spa/**` (SPA
+   fallback), и вход через Gateway (`/spa/**` с обрезкой префикса) работают.
+
 ## Последствия
 
 - Плюс: SPA и API без CORS; 401 JSON предсказуем для клиента; схема маршрутов
