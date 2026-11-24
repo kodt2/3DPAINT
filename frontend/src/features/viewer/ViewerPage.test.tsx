@@ -30,7 +30,7 @@ vi.mock('../../api/models', async (importOriginal) => {
 const getModelMock = vi.mocked(getModel);
 const loadGlbMock = vi.mocked(loadGlb);
 
-function detail(name: string, downloadUrl: string) {
+function detail(name: string, downloadUrl: string | null) {
   return {
     id: 'id-1',
     name,
@@ -125,6 +125,16 @@ describe('ViewerPage', () => {
       await screen.findByText('Не удалось скачать файл (ссылка истекла или недоступна).'),
     ).toBeTruthy();
     expect(loadGlbMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('shows a load error instead of hanging when downloadUrl is missing', async () => {
+    getModelMock.mockResolvedValue(detail('cube.glb', null));
+
+    renderPage();
+
+    expect(await screen.findByRole('alert')).toBeTruthy();
+    expect(screen.getByText('Не удалось загрузить модель.')).toBeTruthy();
+    expect(loadGlbMock).not.toHaveBeenCalled();
   });
 
   it('aborts the in-flight download when the page unmounts', async () => {

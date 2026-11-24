@@ -90,10 +90,17 @@ function ViewerModel({ id }: { id: string }) {
   // 2) GLB download + parse. One retry with a fresh DTO when the presigned
   // URL fails (it lives 30 minutes); aborts on unmount/navigation.
   useEffect(() => {
-    if (!model || model.downloadUrl === null || model.downloadUrl === undefined) {
+    if (!model) {
       return;
     }
     if (modelExtension(model.name) !== '.glb' || !webglOk) {
+      return;
+    }
+    if (model.downloadUrl === null || model.downloadUrl === undefined) {
+      // Defensive: the backend always sets downloadUrl, but a missing URL
+      // must not leave the viewer stuck on "loading" forever.
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- defensive error state, one-shot on a new model DTO
+      failLoad(new Error('missing downloadUrl'));
       return;
     }
     const controller = new AbortController();
@@ -101,7 +108,6 @@ function ViewerModel({ id }: { id: string }) {
     // The GLB state machine must be reset when a fresh DTO arrives (the
     // presigned-URL retry path) — an effect-level reset is the only place
     // where "model changed" is observable.
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- state-machine reset on a new model DTO, see above
     setGlbStatus('loading');
     setGlbError('');
     setProgress(null);
