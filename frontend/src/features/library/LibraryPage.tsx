@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router';
+import { Link, useNavigate } from 'react-router';
 import { useQueryClient } from '@tanstack/react-query';
 import { logout, meQueryKey, useMe } from '../../api/auth';
 import { deleteModel, modelsListKey, useModels, type Model } from '../../api/models';
+import { formatDate, formatSize } from '../../lib/format';
 import { ApiCheck } from '../api-check/ApiCheck';
 
 /**
@@ -32,6 +33,7 @@ export function LibraryPage() {
   useEffect(() => {
     const totalPages = models.data?.totalPages;
     if (totalPages !== undefined && page > totalPages) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- the new totalPages are only known after the post-delete refetch; clamping here is the minimal fix (a render-time clamp would require a second query round-trip)
       setPage(Math.max(1, totalPages));
     }
   }, [models.data, page]);
@@ -138,6 +140,9 @@ function ModelCard({ model, onPreviewError, onDeleted }: ModelCardProps) {
         {formatSize(model.sizeBytes ?? 0)} · {formatDate(model.createdAt ?? '')}
       </p>
       <div className="library-card-actions">
+        <Link className="library-open-3d" to={`/models/${model.id}`}>
+          Открыть 3D
+        </Link>
         {confirming ? (
           <>
             <span className="library-confirm-question">Удалить модель?</span>
@@ -238,29 +243,4 @@ function LogoutButton() {
       )}
     </div>
   );
-}
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) {
-    return `${bytes} Б`;
-  }
-  const units = ['КБ', 'МБ', 'ГБ'];
-  let value = bytes / 1024;
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit++;
-  }
-  return `${value.toLocaleString('ru-RU', { maximumFractionDigits: 1 })} ${units[unit]}`;
-}
-
-function formatDate(iso: string): string {
-  if (!iso) {
-    return '';
-  }
-  return new Date(iso).toLocaleDateString('ru-RU', {
-    day: 'numeric',
-    month: 'long',
-    year: 'numeric',
-  });
 }

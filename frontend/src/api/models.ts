@@ -33,6 +33,20 @@ export function useModels(page: number, pageSize = DEFAULT_PAGE_SIZE) {
 }
 
 /**
+ * GET /api/models/{id} — a single model (owner-scoped, ADR 0013):
+ * a model that does not exist or belongs to another user is a 404.
+ */
+export async function getModel(id: string): Promise<ModelDetail> {
+  const { data, error, response } = await api.GET('/api/models/{id}', {
+    params: { path: { id } },
+  });
+  if (!response.ok || data === undefined) {
+    throw new ApiError(response.status, problemFrom(error));
+  }
+  return data;
+}
+
+/**
  * DELETE /api/models/{id} — 204 on success. 404 means the model is gone
  * (or, by the owner-scoped contract, never belonged to this user).
  */
