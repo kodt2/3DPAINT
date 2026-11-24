@@ -127,6 +127,30 @@ public class FileStorageService : IFileStorageService
         return await GetPresignClient().PresignedGetObjectAsync(args);
     }
 
+    public async Task DeleteFileAsync(UserFile file, CancellationToken cancellationToken = default)
+    {
+        _logger.LogInformation(
+            ">>> [S3 DELETE] Model {ModelId}: original {StoragePath}, thumbnail {ThumbnailPath}",
+            file.id,
+            file.storage_path,
+            file.thumbnail_path ?? "<none>");
+
+        await _minioClient.RemoveObjectAsync(
+            new RemoveObjectArgs()
+                .WithBucket(_options.BucketName)
+                .WithObject(file.storage_path),
+            cancellationToken);
+
+        if (!string.IsNullOrWhiteSpace(file.thumbnail_path))
+        {
+            await _minioClient.RemoveObjectAsync(
+                new RemoveObjectArgs()
+                    .WithBucket(_options.BucketName)
+                    .WithObject(file.thumbnail_path),
+                cancellationToken);
+        }
+    }
+
     private IMinioClient GetPresignClient()
     {
         if (_presignClient is not null)
