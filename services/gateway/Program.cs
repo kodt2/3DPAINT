@@ -15,6 +15,13 @@ var frontendAddress = builder.Configuration["Upstream:Frontend"]
     ?? throw new InvalidOperationException("Upstream:Frontend is not configured.");
 var maxUploadBytes = builder.Configuration.GetValue("MaxUploadBytes", 100 * 1024 * 1024);
 
+// Envelope headroom (ADR 0015): the body limit applies to the whole multipart
+// body (file bytes + boundary/headers), so a file exactly at the limit must
+// still pass the gateway; the monolith's app-level check (file size vs the
+// same limit) is authoritative.
+const long bodySlack = 1L * 1024L * 1024L;
+var maxRequestBody = maxUploadBytes + bodySlack;
+
 // Shared request transforms for proxied routes.
 static List<IReadOnlyDictionary<string, string>> StandardTransforms()
 {
@@ -47,7 +54,7 @@ builder.Host.UseSerilog();
 // The gateway must not cut uploads up to the configured limit (default 100 MiB).
 builder.WebHost.ConfigureKestrel(options =>
 {
-    options.Limits.MaxRequestBodySize = maxUploadBytes;
+    options.Limits.MaxRequestBodySize = maxRequestBody;
     // Never abort a slow but active upload: 10 bytes per second is enough for liveness.
     options.Limits.MinRequestBodyDataRate = new MinDataRate(10, TimeSpan.FromSeconds(5));
 });
@@ -72,7 +79,7 @@ var apiRoute = new RouteConfig
     RouteId = "api-to-monolith",
     ClusterId = "monolith",
     Order = 1,
-    MaxRequestBodySize = maxUploadBytes,
+    MaxRequestBodySize = maxRequestBody,
     Match = new RouteMatch { Path = "/api/{**catch-all}" },
     Transforms = StandardTransforms(),
 };
@@ -97,7 +104,7 @@ var monolithRoute = new RouteConfig
     RouteId = "monolith",
     ClusterId = "monolith",
     Order = 4,
-    MaxRequestBodySize = maxUploadBytes,
+    MaxRequestBodySize = maxRequestBody,
     Match = new RouteMatch { Path = "{**catch-all}" },
     Transforms = StandardTransforms(),
 };
