@@ -88,12 +88,24 @@ make up-dev   # поднимает профиль `dev`: Vite-сервер на 
 `http://localhost:5173/spa/` (`/api` Vite проксирует в Gateway). Для этого
 `make up-dev` (через `infra/compose.dev.yml`) добавляет origin Vite
 `http://localhost:5173` в разрешённые для CSRF-проверки Gateway; в
-production-стек этот origin не попадает (ADR 0011 §6.1).
+production-стек этот origin не попадает (ADR 0011 §6.1). Vite-контейнер
+работает под пользователем хоста (`UID`/`GID`), а `node_modules` живёт в
+именованном томе — в `frontend/` не остаётся root-файлов.
 
 Тесты фронтенда: `npm run lint`, `npm test` (Vitest), `npm run build`,
 E2E — `npm run test:e2e` (Playwright, ходит **через Gateway**;
 базовый URL — `E2E_BASE_URL` или `http://localhost:${WEB_PORT}`,
 например `WEB_PORT=18080 npx playwright test`).
+
+**Rate limiting входа (с шага 3c.1a, ADR 0011 §6.2).** Gateway ограничивает
+`POST /api/auth/login` и `POST /api/auth/register`: по умолчанию **10
+запросов на 60 секунд на клиента**, при превышении — `429`
+(ProblemDetails + `Retry-After`). Лимит настраивается env
+`RATE_LIMIT_REQUESTS_PER_MINUTE` / `RATE_LIMIT_WINDOW_SECONDS`; для
+повторяющихся E2E-прогонов поднимите его (`RATE_LIMIT_REQUESTS_PER_MINUTE=100
+make up`) — production-дефолт намеренно консервативен. Ключ клиента — IP
+прямого соединения; `X-Forwarded-For` учитывается только от доверенного
+прокси (`KNOWN_PROXIES` / `KNOWN_NETWORKS`, по умолчанию пусты).
 
 Типы API-клиента генерируются из OpenAPI монолита (`npm run gen:api` в
 `frontend/`, требует работающий dev-стэк; upload-эндпоинт в документе пока не
@@ -145,6 +157,7 @@ Swagger UI и включён dev-профиль OpenAPI):
 | `PUBLIC_ORIGIN` | `https://<домен>` (тот же, под которым открыт сайт) | CSRF-проверка мутаций `/api/**` в Gateway (ADR 0011 §6); по умолчанию (`пусто`) разрешён только `http://localhost:{WEB_PORT}` — из браузера по домену мутации получат `403` |
 | `S3_CORS_ORIGINS` | тот же origin, что в `PUBLIC_ORIGIN` | браузерные загрузки/скачивания через presigned URL (раздел «Публичный S3») |
 | `WEB_PORT` | публичный порт Gateway (обычно `80` за TLS-прокси) | дефолтный origin и порты compose |
+| `KNOWN_PROXIES` | адрес reverse-прокси перед Gateway (IP, или CIDR в `KNOWN_NETWORKS`) | rate limiting входа: `X-Forwarded-For` доверяется только от него (ADR 0011 §6.2); без этого все пользователи делят один бакет по IP прокси |
 | секреты (`JWT_SECRET`, `MINIO_ROOT_PASSWORD`, `DB_PASSWORD`) | настоящие, не dev-значения из `.env.example` | — |
 
 Важные детали:

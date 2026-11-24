@@ -35,12 +35,13 @@
 | TD-9 | `AppDbContext.cs` лежит в папке `data/` | `data/` | Перенести при рефакторинге структуры |
 | TD-10 | `LoginAndReg.csproj` ссылается на несуществующую папку `wwwroot\Новая папка`; неиспользуемый пакет `System.Reactive` | `LoginAndReg.csproj` | Мусор из экспериментов |
 | ~~TD-11~~ | ✅ **Решено в шаге 1.0 (2026-11-22):** атрибут `version:` удалён из `docker-compose.yml` | `docker-compose.yml` | — |
-| TD-17 | Нет health-эндпоинтов, OpenAPI, rate-limit, CORS-конфига, тестов, CI | весь проект | Поэтапно: health — в каждом сервисе (по плану), OpenAPI — с Phase 2/4, CI — отдельное решение |
+| TD-17 | Нет health-эндпоинтов, OpenAPI, rate-limit, CORS-конфига, тестов, CI. **Частично закрыто в 3c.1a:** rate-limit на логин/регистрацию есть на Gateway (in-memory, ADR 0011 §6.2) | весь проект | Поэтапно: health — в каждом сервисе (по плану), OpenAPI — с Phase 2/4, CI — отдельное решение |
 | TD-18 | «Миниатюра» — SVG-заглушка, а не превью геометрии; в UI имитируется анимация «генерации превью» | `ThumbnailService`, `home-dashboard.js` | Честные превью — задача processing-воркера (Фаза 6) |
 | TD-19 | Декоративные кнопки Google/GitHub/Discord и «модули покраски/заказа» — заглушки без backend | `Views/Account/Auth.cshtml`, `home-dashboard.js` | Не вводить в заблуждение или реализовать — решение человека (вопрос §9 ARCHITECTURE) |
 | TD-21 | `global.json` отсутствует; версия SDK закреплена только в Dockerfile | корень | Создать на Фазе 1 (по плану) |
 | TD-22 | OpenAPI монолита не описывает `POST /api/files/upload`: Swashbuckle 7.x не моделирует `[FromForm] IFormFile`; акшен исключён из документа через `DocInclusionPredicate` | `Program.cs` (монолит), `frontend/src/api/schema.ts` | Дописать контракт upload в OpenAPI вручную (или заменить генератор) при переносе загрузки (3c/Фаза 5) |
 | TD-23 | На мутации `/api/**` нет antiforgery-защиты (в монолите её никогда не было). **Частично mitigated в шаге 3b.0:** держит `SameSite=Lax` + Origin-проверка в Gateway (403) + требование `Content-Type: application/json` для JSON-эндпоинтов (415) — ADR 0011 §6. Финальная CSRF-модель (antiforgery/double-submit) всё ещё не принята | `legacy/monolith`, `services/gateway`, ADR 0011 | При Фазе 4 (Auth Service) принять финальную CSRF-модель для SPA |
+| TD-25 | Rate limit логина/регистрации на Gateway — in-memory скользящее окно на процесс: при перезапуске окно сбрасывается, при N репликах Gateway лимит N раз шире (шаг 3c.1a) | `services/gateway/Middleware/SlidingWindowCounter.cs` | Durable/общий счётчик (Redis или аналог) — вместе с инфраструктурой Фаз 4/5, если brute-force станет реальной угрозой (ADR 0011 §6.2) |
 
 ## Прочее (не долг, факты)
 
