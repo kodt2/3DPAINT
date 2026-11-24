@@ -22,8 +22,7 @@ E2E_FILER_PORT ?= 18888
 COMPOSE_E2E := WEB_PORT=$(E2E_PORT) S3_PUBLIC_PORT=$(E2E_S3_PORT) \
     S3_FILER_PORT=$(E2E_FILER_PORT) \
     RATE_LIMIT_REQUESTS_PER_MINUTE=100 $(COMPOSE) -p 3dpaint-e2e
-E2E_DOWN := docker compose -f infra/compose.yml -f infra/compose.override.yml \
-    -p 3dpaint-e2e down --volumes --remove-orphans
+E2E_DOWN := $(COMPOSE) -p 3dpaint-e2e down --volumes --remove-orphans
 
 .PHONY: up up-dev down logs build test e2e
 
