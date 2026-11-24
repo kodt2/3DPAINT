@@ -1,28 +1,11 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from '@playwright/test';
+import { loginViaUi, registerViaUi, uniqueLogin } from './helpers';
 
 /**
  * Step 3c.1 E2E: the SPA under /spa/** behind the Gateway.
  * Every test uses a fresh browser context (no shared cookies) and a unique
  * login, so tests never depend on each other or on leftover data.
  */
-const uniqueLogin = () => `e2e_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
-
-async function registerViaUi(page: Page, login: string) {
-  await page.goto('/spa/register');
-  await page.getByLabel('Полное имя').fill('E2E Tester');
-  await page.getByLabel('Дата рождения').fill('1995-01-15');
-  await page.getByLabel('Логин').fill(login);
-  await page.getByLabel('Пароль').fill('e2e-secret-1');
-  await page.getByRole('button', { name: 'Зарегистрироваться' }).click();
-}
-
-async function loginViaUi(page: Page, login: string, password = 'e2e-secret-1') {
-  await page.goto('/spa/login');
-  await page.getByLabel('Логин').fill(login);
-  await page.getByLabel('Пароль').fill(password);
-  await page.getByRole('button', { name: 'Войти' }).click();
-}
-
 test('anonymous visitor on /spa/library is redirected to the login screen', async ({ page }) => {
   await page.goto('/spa/library');
   await expect(page).toHaveURL(/\/spa\/login/);
