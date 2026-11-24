@@ -23,6 +23,16 @@ services:
       # PUBLIC_ORIGIN=https://3dpaint.example.com (see README, «Деплой на сервер»).
       # The dev profile (infra/compose.dev.yml) adds the Vite origin.
       - PUBLIC_ORIGIN=${PUBLIC_ORIGIN:-}
+      # Login/register rate limit (in-memory sliding window per client, ADR 0011):
+      # default 10 requests per 60 seconds. Raise for the test stand if needed;
+      # the defaults are intentionally conservative.
+      - RATE_LIMIT_REQUESTS_PER_MINUTE=${RATE_LIMIT_REQUESTS_PER_MINUTE:-}
+      - RATE_LIMIT_WINDOW_SECONDS=${RATE_LIMIT_WINDOW_SECONDS:-}
+      # Trusted proxies (comma-separated IPs) / networks (comma-separated CIDRs)
+      # allowed to identify the real client via X-Forwarded-For. Empty by
+      # default: the client key is always the direct socket peer.
+      - KNOWN_PROXIES=${KNOWN_PROXIES:-}
+      - KNOWN_NETWORKS=${KNOWN_NETWORKS:-}
     depends_on:
       - web
       - frontend
