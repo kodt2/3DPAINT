@@ -12,3 +12,18 @@ services:
   gateway:
     environment:
       PUBLIC_ORIGIN: http://localhost:${WEB_PORT:-8080},http://localhost:5173
+
+  # One-shot (runs as root, the only privilege it has): make the shared
+  # vite-node-modules volume owned by the host dev user, because Docker
+  # initializes an empty named volume root-owned. Runs before frontend-dev.
+  vite-node-modules-init:
+    image: node:20.19.5-alpine3.22
+    profiles: ["dev"]
+    volumes:
+      - vite-node-modules:/app/node_modules
+    command: ["sh", "-c", "chown -R ${UID:-1000}:${GID:-1000} /app/node_modules"]
+
+  frontend-dev:
+    depends_on:
+      vite-node-modules-init:
+        condition: service_completed_successfully

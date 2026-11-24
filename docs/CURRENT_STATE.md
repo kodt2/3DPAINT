@@ -73,7 +73,7 @@
 - **Нет** health-эндпоинтов (`/health/live`, `/health/ready` отсутствуют).
 - `UseHttpsRedirection()` подключён, но HTTPS-эндпоинт не опубликован — фактически ничего не делает (в проде TLS режет внешний nginx, конфига которого **нет в репозитории**, см. README).
 - В режиме `Production` обработчик исключений указывает на `/Home/Error`, **которого не существует** (нет такого action в `HomeController`) → необработанное исключение = 500 с пустым телом (TD-5).
-- CORS в коде не настроен; rate-limiting отсутствует.
+- CORS в коде не настроен; rate-limiting отсутствует (логин/регистрация ограничены на Gateway с шага 3c.1a, ADR 0011 §6.2).
 - (с шага 3b.0) Middleware монолита: state-changing запрос (`POST/PUT/PATCH/DELETE`) на `/api/**` **с телом** обязан приходить с `Content-Type: application/json`, иначе `415` (ProblemDetails). Исключение — эндпоинты с form-параметрами (`POST /api/files/upload`); мутации без тела не проверяются (см. ADR 0011 §6).
 - (с шага 3b.0) OpenAPI (`/swagger/**`) отдаётся **только при `ASPNETCORE_ENVIRONMENT=Development`**; в Production-подобных стэках — `404`. Dev-стэк задаёт окружение через `infra/.env` (`ASPNETCORE_ENVIRONMENT=Development`); настройка `OpenApi:Enabled` удалена.
 - (с шага 3c.1) JSON auth API для SPA (`Controllers/AuthApiController.cs`, `[AllowAnonymous]`): `POST /api/auth/login` (`{login, password}` → `AuthUserDto`, неудача — `401` ProblemDetails), `POST /api/auth/register` (`{fullName, birthDate, login, password}` → `201` + `AuthUserDto`; занятый login — `409`; валидация — `400` с `errors`), `POST /api/auth/logout` (`204`, удаляет cookie). `GET /api/me` теперь типизирован (`AuthUserDto`, `401` — ProblemDetails). Парольные проверки идут через тот же `IAccountService`, что и Razor-экраны (хранирование паролей не менялось).
@@ -195,6 +195,7 @@
 - [ ] (с шага 3b.0) `POST /api/**` с телом и `Content-Type: text/plain` (при правильном `Origin`) → **415**; `POST /api/files/upload` multipart — не 415.
 - [ ] (с шага 3b.0) `GET /swagger/v1/swagger.json` в dev-стэке → 200; в Production-подобном → 404.
 - [ ] (с шага 3b.0) Razor-формы работают как раньше (логин/регистрация через `/Account/Auth`), т.к. Origin-проверка не трогает не-`/api` пути.
+- [ ] (с шага 3c.1a) `POST /api/auth/login` 11 раз подряд от одного клиента → первые 10 доходят до монолита, 11-й → **429** `application/problem+json` + заголовок `Retry-After` (rate limit Gateway, ADR 0011 §6.2).
 
 ## 11. Инвентарь экранов (составлен 2026-11-23, шаг 3a; субагент + сверка главным агентом)
 
@@ -241,6 +242,8 @@ Layout'ы: `_HomeLayout` (только Google Fonts + `css/home-dashboard.css`),
 (с шага 3c.1) Экраны: `/spa/login` и `/spa/register` (JSON-эндпоинты `AuthApiController`), защищённый `/spa/library` (пока заглушка «Здравствуйте, …» + logout; список моделей придёт в 3c.2), `/spa/` — редирект по результату `GET /api/me`. Состояние авторизации — TanStack Query (`useMe()`, `queryKey ['me']`), маршруты — React Router (`basename="/spa"`), ошибки — из ProblemDetails (`detail` + полевые `errors`). Тесты: Vitest (unit, `MemoryRouter`, моки `openapi-fetch`) и Playwright (E2E `e2e/auth.spec.ts`, базовый URL — `http://localhost:{WEB_PORT}`, т.е. через Gateway; `npm run test:e2e`, `WEB_PORT=<порт> npx playwright test`).
 
 (с шага 3c.1) Origin-проверка Gateway усилена: сравнение разбором URL (`scheme + host + порт`), не строковым префиксом — `Referer: http://localhost:8080.evil.com` → `403`, `https://example.com:443` == `https://example.com`, литерал `Origin: null` → `403`; найден и исправлен баг: env `PUBLIC_ORIGIN` читался как `PublicOrigin` (case-sensitive lookup в .NET 10) и молча игнорировался — регрессионный тест добавлен. Dev-профиль (`make up-dev`) через `infra/compose.dev.yml` добавляет в `PUBLIC_ORIGIN` origin Vite-сервера `http://localhost:5173` (браузер ходит в Vite, `/api` проксируется в Gateway); в production-стек этот origin не попадает (проверено: `make up` + `Origin: http://localhost:5173` → `403`).
+
+(с шага 3c.1a) Rate limiting входа на Gateway (`AuthRateLimitMiddleware` + `SlidingWindowCounter`, ADR 0011 §6.2): `POST /api/auth/login` и `POST /api/auth/register` — скользящее окно, по умолчанию 10 запросов на 60 с на клиента, превышение → `429` ProblemDetails + `Retry-After`. Конфиг: env `RATE_LIMIT_REQUESTS_PER_MINUTE`, `RATE_LIMIT_WINDOW_SECONDS`, `KNOWN_PROXIES` (IP), `KNOWN_NETWORKS` (CIDR) — по умолчанию 10/60 и пустые списки; `X-Forwarded-For` учитывается только если socket peer — доверенный прокси. Middleware стоит до OriginCheck (запросы с чужим Origin тоже расходуют лимит). Тесты: Gateway-тесты (429 + `Retry-After`, независимость ключей, другие маршруты не ограничиваются, XFF-логика, fail-fast на невалидном `KNOWN_*`) + живой прогон (`make up`: 10×401 + 429; `RATE_LIMIT_REQUESTS_PER_MINUTE=100`: 11 запросов без 429; E2E 4/4 с дефолтным лимитом). Dev-профиль: Vite-контейнер работает под `UID:GID` хоста, `node_modules` — в именованном томе `vite-node-modules` (one-shot `vite-node-modules-init` делает `chown`), `HOME=/tmp` — в `frontend/` нет root-файлов (проверено: `make up-dev`, `make down`, `find frontend -user root` → 0).
 
 **Экраны Razor не переносились и не удалялись.**
 

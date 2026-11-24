@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Configuration;
 using Xunit;
 
 namespace Gateway.Tests;
@@ -465,6 +466,394 @@ public sealed class OriginCheckTests : IDisposable
     public void Dispose() => _upstream.Dispose();
 }
 
+public sealed class AuthRateLimitTests : IDisposable
+{
+    private const string PublicOrigin = "http://allowed.example";
+
+    private readonly StubUpstream _upstream = new("monolith");
+
+    private static WebApplicationFactory<Program> CreateFactory(string upstreamAddress, params (string Key, string Value)[] settings)
+    {
+        var factory = new TestAppFactory();
+        return factory.WithWebHostBuilder(builder =>
+        {
+            builder.UseSetting("WEB_PORT", "8080");
+            builder.UseSetting("PublicOrigin", PublicOrigin);
+            builder.UseSetting("Upstream:Monolith", upstreamAddress);
+            builder.UseSetting("Upstream:Frontend", "http://127.0.0.1:1");
+            foreach (var (key, value) in settings)
+            {
+                builder.UseSetting(key, value);
+            }
+        });
+    }
+
+    private static HttpRequestMessage AuthPost(string path)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, path);
+        request.Headers.Add("Origin", PublicOrigin);
+        request.Content = new StringContent("{}", System.Text.Encoding.UTF8, "application/json");
+        return request;
+    }
+
+    [Fact]
+    public async Task Post_login_beyond_limit_returns_429_problem_details_with_retry_after()
+    {
+        using var factory = CreateFactory(_upstream.Url, ("RATE_LIMIT_REQUESTS_PER_MINUTE", "3"));
+        var client = factory.CreateClient();
+
+        for (var i = 0; i < 3; i++)
+        {
+            using var ok = await client.SendAsync(AuthPost("/api/auth/login"));
+            Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
+        }
+
+        using var rejected = await client.SendAsync(AuthPost("/api/auth/login"));
+        Assert.Equal(HttpStatusCode.TooManyRequests, rejected.StatusCode);
+        Assert.Equal("application/problem+json", rejected.Content.Headers.ContentType?.MediaType);
+        var retryAfter = rejected.Headers.RetryAfter?.Delta;
+        Assert.NotNull(retryAfter);
+        Assert.InRange(retryAfter!.Value.TotalSeconds, 1, 60);
+        var body = await rejected.Content.ReadAsStringAsync();
+        Assert.Contains("\"status\":429", body);
+        Assert.Contains("\"title\":\"Too Many Requests\"", body);
+        // Only the first three requests reached the monolith.
+        Assert.Equal(3, _upstream.CountOf("/api/auth/login"));
+    }
+
+    [Fact]
+    public async Task Post_register_beyond_limit_returns_429()
+    {
+        using var factory = CreateFactory(_upstream.Url, ("RATE_LIMIT_REQUESTS_PER_MINUTE", "2"));
+        var client = factory.CreateClient();
+
+        for (var i = 0; i < 2; i++)
+        {
+            using var ok = await client.SendAsync(AuthPost("/api/auth/register"));
+            Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
+        }
+
+        using var rejected = await client.SendAsync(AuthPost("/api/auth/register"));
+        Assert.Equal(HttpStatusCode.TooManyRequests, rejected.StatusCode);
+        Assert.Equal(2, _upstream.CountOf("/api/auth/register"));
+    }
+
+    [Fact]
+    public async Task Different_clients_have_independent_buckets()
+    {
+        // Middleware-level test: TestServer does not set a per-client
+        // RemoteIpAddress, so the per-client behavior is exercised directly
+        // with distinct socket peers (the XFF / trusted-proxy key selection
+        // is covered by ClientKeyResolverTests).
+        var counter = new SlidingWindowCounter(TimeSpan.FromSeconds(60));
+        var resolver = new TrustedProxyClientKeyResolver(Array.Empty<IPAddress>(), Array.Empty<IPNetwork>());
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["RateLimitRequestsPerMinute"] = "2",
+            })
+            .Build();
+        var middleware = new AuthRateLimitMiddleware(
+            _ => Task.CompletedTask,
+            counter,
+            resolver,
+            config,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<AuthRateLimitMiddleware>.Instance);
+
+        async Task<int> Invoke(IPAddress remote)
+        {
+            var context = new DefaultHttpContext();
+            context.Request.Method = HttpMethods.Post;
+            context.Request.Path = "/api/auth/login";
+            context.Connection.RemoteIpAddress = remote;
+            await middleware.InvokeAsync(context);
+            return context.Response.StatusCode;
+        }
+
+        var clientA = IPAddress.Parse("192.0.2.1");
+        var clientB = IPAddress.Parse("198.51.100.9");
+
+        Assert.Equal(200, await Invoke(clientA));
+        Assert.Equal(200, await Invoke(clientA));
+        Assert.Equal(429, await Invoke(clientA));
+
+        // A different client has a fresh bucket: the limit is per client, not global.
+        Assert.Equal(200, await Invoke(clientB));
+        Assert.Equal(200, await Invoke(clientB));
+        Assert.Equal(429, await Invoke(clientB));
+    }
+
+    [Fact]
+    public async Task Rate_limit_does_not_apply_to_other_routes()
+    {
+        using var factory = CreateFactory(_upstream.Url, ("RATE_LIMIT_REQUESTS_PER_MINUTE", "1"));
+        var client = factory.CreateClient();
+
+        using var first = await client.SendAsync(AuthPost("/api/auth/login"));
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+
+        // Other /api routes are not limited by the auth counter.
+        var other = AuthPost("/api/models");
+        using var second = await client.SendAsync(other);
+        Assert.Equal(HttpStatusCode.OK, second.StatusCode);
+        Assert.Equal("/api/models", _upstream.LastRequestPath);
+
+        // The login counter is exhausted: the next login attempt is rejected.
+        using var third = await client.SendAsync(AuthPost("/api/auth/login"));
+        Assert.Equal(HttpStatusCode.TooManyRequests, third.StatusCode);
+    }
+
+    [Fact]
+    public async Task Non_post_requests_to_login_path_are_not_limited()
+    {
+        using var factory = CreateFactory(_upstream.Url, ("RATE_LIMIT_REQUESTS_PER_MINUTE", "1"));
+        var client = factory.CreateClient();
+
+        for (var i = 0; i < 3; i++)
+        {
+            using var response = await client.GetAsync("/api/auth/login");
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        }
+
+        Assert.Equal(3, _upstream.CountOf("/api/auth/login"));
+    }
+
+    [Fact]
+    public async Task Limit_setting_via_env_spelling_is_read()
+    {
+        // Regression guard (TD-24 class of bug): the env spelling must work,
+        // not only the PascalCase appsettings key.
+        using var factory = CreateFactory(_upstream.Url, ("RATE_LIMIT_WINDOW_SECONDS", "90"));
+        // The window spelling is exercised by the counter construction at
+        // startup; if the env spelling were ignored the default 60 s window
+        // would be used and this test would not detect it here, so also verify
+        // the helper directly against the same config the app sees.
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["RATE_LIMIT_REQUESTS_PER_MINUTE"] = "5",
+                ["RateLimitRequestsPerMinute"] = "7",
+            })
+            .Build();
+        Assert.Equal(7, AuthRateLimitMiddleware.ReadPositiveInt(config, "RateLimitRequestsPerMinute", "RATE_LIMIT_REQUESTS_PER_MINUTE", 10));
+        var configEnvOnly = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["RATE_LIMIT_REQUESTS_PER_MINUTE"] = "5",
+            })
+            .Build();
+        Assert.Equal(5, AuthRateLimitMiddleware.ReadPositiveInt(configEnvOnly, "RateLimitRequestsPerMinute", "RATE_LIMIT_REQUESTS_PER_MINUTE", 10));
+
+        var client = factory.CreateClient();
+        for (var i = 0; i < 10; i++)
+        {
+            using var ok = await client.SendAsync(AuthPost("/api/auth/login"));
+            Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
+        }
+
+        using var rejected = await client.SendAsync(AuthPost("/api/auth/login"));
+        Assert.Equal(HttpStatusCode.TooManyRequests, rejected.StatusCode);
+    }
+
+    public void Dispose() => _upstream.Dispose();
+}
+
+public sealed class ClientKeyResolverTests
+{
+    private static TrustedProxyClientKeyResolver Resolver(
+        params (IPAddress Ip, IPNetwork? Network)[] entries)
+    {
+        var ips = entries.Where(e => e.Network is null).Select(e => e.Ip).ToArray();
+        var networks = entries.Where(e => e.Network is not null).Select(e => e.Network!.Value).ToArray();
+        return new TrustedProxyClientKeyResolver(ips, networks);
+    }
+
+    [Fact]
+    public void Untrusted_remote_ignores_x_forwarded_for()
+    {
+        var resolver = Resolver();
+        var context = new DefaultHttpContext();
+        context.Connection.RemoteIpAddress = IPAddress.Parse("192.0.2.7");
+        context.Request.Headers["X-Forwarded-For"] = "1.1.1.1";
+
+        Assert.Equal("192.0.2.7", resolver.Resolve(context));
+    }
+
+    [Fact]
+    public void Trusted_remote_without_xff_uses_the_peer()
+    {
+        var resolver = Resolver((IPAddress.Parse("192.0.2.7"), null));
+        var context = new DefaultHttpContext();
+        context.Connection.RemoteIpAddress = IPAddress.Parse("192.0.2.7");
+
+        Assert.Equal("192.0.2.7", resolver.Resolve(context));
+    }
+
+    [Fact]
+    public void Trusted_remote_walks_xff_right_to_left_skipping_trusted_entries()
+    {
+        var resolver = Resolver(
+            (IPAddress.Parse("10.0.0.5"), null),
+            (IPAddress.Any, IPNetwork.Parse("172.16.0.0/12")));
+        var context = new DefaultHttpContext();
+        context.Connection.RemoteIpAddress = IPAddress.Parse("10.0.0.5");
+        context.Request.Headers["X-Forwarded-For"] = "198.51.100.23, 172.16.4.4, 10.0.0.5";
+
+        // 10.0.0.5 (trusted proxy) is skipped, 172.16.4.4 (in 172.16/12) is
+        // skipped, 198.51.100.23 is the first untrusted entry: the client.
+        Assert.Equal("198.51.100.23", resolver.Resolve(context));
+    }
+
+    [Fact]
+    public void Trusted_remote_with_all_trusted_xff_falls_back_to_leftmost_entry()
+    {
+        var resolver = Resolver((IPAddress.Any, IPNetwork.Parse("172.16.0.0/12")));
+        var context = new DefaultHttpContext();
+        context.Connection.RemoteIpAddress = IPAddress.Parse("172.16.9.9");
+        context.Request.Headers["X-Forwarded-For"] = "172.16.1.1, 172.16.2.2";
+
+        Assert.Equal("172.16.1.1", resolver.Resolve(context));
+    }
+
+    [Fact]
+    public void Unparseable_xff_entries_are_skipped()
+    {
+        var resolver = Resolver((IPAddress.Parse("10.0.0.5"), null));
+        var context = new DefaultHttpContext();
+        context.Connection.RemoteIpAddress = IPAddress.Parse("10.0.0.5");
+        context.Request.Headers["X-Forwarded-For"] = "garbage, 203.0.113.4, 10.0.0.5";
+
+        Assert.Equal("203.0.113.4", resolver.Resolve(context));
+    }
+
+    [Fact]
+    public void Null_remote_returns_unknown()
+    {
+        var resolver = Resolver();
+        var context = new DefaultHttpContext();
+
+        Assert.Equal("unknown", resolver.Resolve(context));
+    }
+
+    [Fact]
+    public void FromConfiguration_parses_proxies_and_networks()
+    {
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["KNOWN_PROXIES"] = "1.1.1.1, 2.2.2.2",
+                ["KNOWN_NETWORKS"] = "10.0.0.0/8",
+            })
+            .Build();
+        var resolver = TrustedProxyClientKeyResolver.FromConfiguration(config);
+
+        var context = new DefaultHttpContext();
+        context.Connection.RemoteIpAddress = IPAddress.Parse("2.2.2.2");
+        context.Request.Headers["X-Forwarded-For"] = "198.51.100.9, 10.1.2.3";
+        Assert.Equal("198.51.100.9", resolver.Resolve(context));
+    }
+
+    [Fact]
+    public void FromConfiguration_with_no_settings_trusts_nothing()
+    {
+        var config = new ConfigurationBuilder().Build();
+        var resolver = TrustedProxyClientKeyResolver.FromConfiguration(config);
+
+        var context = new DefaultHttpContext();
+        context.Connection.RemoteIpAddress = IPAddress.Parse("192.0.2.7");
+        context.Request.Headers["X-Forwarded-For"] = "1.1.1.1";
+        Assert.Equal("192.0.2.7", resolver.Resolve(context));
+    }
+
+    [Fact]
+    public void FromConfiguration_rejects_unparseable_proxy()
+    {
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["KNOWN_PROXIES"] = "not-an-ip",
+            })
+            .Build();
+
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            TrustedProxyClientKeyResolver.FromConfiguration(config));
+        Assert.Contains("KNOWN_PROXIES", ex.Message);
+    }
+
+    [Fact]
+    public void FromConfiguration_rejects_unparseable_network()
+    {
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["KNOWN_NETWORKS"] = "10.0.0.0/bad",
+            })
+            .Build();
+
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            TrustedProxyClientKeyResolver.FromConfiguration(config));
+        Assert.Contains("KNOWN_NETWORKS", ex.Message);
+    }
+}
+
+public sealed class SlidingWindowCounterTests
+{
+    [Fact]
+    public void Allows_up_to_limit_within_window_then_rejects()
+    {
+        var nowSeconds = 0L;
+        var counter = new SlidingWindowCounter(TimeSpan.FromSeconds(10), () => nowSeconds * TimeSpan.TicksPerSecond);
+
+        Assert.True(counter.TryAcquire("a", 2, out _));
+        Assert.True(counter.TryAcquire("a", 2, out _));
+        Assert.False(counter.TryAcquire("a", 2, out var retryAfter));
+        Assert.InRange(retryAfter, 1, 10);
+    }
+
+    [Fact]
+    public void Expired_timestamps_leave_room_for_new_acquisitions()
+    {
+        var nowSeconds = 0L;
+        var counter = new SlidingWindowCounter(TimeSpan.FromSeconds(10), () => nowSeconds * TimeSpan.TicksPerSecond);
+
+        Assert.True(counter.TryAcquire("a", 1, out _));
+
+        nowSeconds = 9; // The first timestamp is still inside the window.
+        Assert.False(counter.TryAcquire("a", 1, out _));
+
+        nowSeconds = 10; // It has just expired: room opens up.
+        Assert.True(counter.TryAcquire("a", 1, out _));
+    }
+
+    [Fact]
+    public void Distinct_keys_are_independent()
+    {
+        var counter = new SlidingWindowCounter(TimeSpan.FromSeconds(10));
+
+        Assert.True(counter.TryAcquire("a", 1, out _));
+        Assert.False(counter.TryAcquire("a", 1, out _));
+        Assert.True(counter.TryAcquire("b", 1, out _));
+    }
+
+    [Fact]
+    public void Retry_after_is_never_below_one_second()
+    {
+        var nowSeconds = 0L;
+        var counter = new SlidingWindowCounter(TimeSpan.FromSeconds(10), () => nowSeconds * TimeSpan.TicksPerSecond);
+
+        Assert.True(counter.TryAcquire("a", 1, out _));
+        nowSeconds = 9; // Oldest timestamp expires in exactly one second.
+        Assert.False(counter.TryAcquire("a", 1, out var retryAfter));
+        Assert.Equal(1, retryAfter);
+    }
+
+    [Fact]
+    public void Non_positive_window_is_rejected()
+    {
+        Assert.Throws<ArgumentException>(() => new SlidingWindowCounter(TimeSpan.Zero));
+    }
+}
+
 /// <summary>
 /// Minimal Kestrel-based HTTP stub that records the headers of the last request
 /// and answers 200. Kestrel (like the real monolith) accepts any Host header.
@@ -473,6 +862,7 @@ internal sealed class StubUpstream : IDisposable
 {
     private readonly WebApplication _app;
     private readonly string _marker;
+    private readonly List<string> _requestPaths = [];
 
     public StubUpstream(string marker)
     {
@@ -485,6 +875,7 @@ internal sealed class StubUpstream : IDisposable
         _app = builder.Build();
         _app.Run(context =>
         {
+            _requestPaths.Add(context.Request.Path.Value ?? string.Empty);
             var collection = new NameValueCollection();
             foreach (var (key, value) in context.Request.Headers)
             {
@@ -503,6 +894,10 @@ internal sealed class StubUpstream : IDisposable
     public NameValueCollection? LastRequestHeaders { get; private set; }
 
     public string? LastRequestPath { get; private set; }
+
+    public int CountOf(string path) => _requestPaths.Count(p => p == path);
+
+    public int TotalRequests => _requestPaths.Count;
 
     private static int GetFreePort()
     {

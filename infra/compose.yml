@@ -23,6 +23,16 @@ services:
       # PUBLIC_ORIGIN=https://3dpaint.example.com (see README, «Деплой на сервер»).
       # The dev profile (infra/compose.dev.yml) adds the Vite origin.
       - PUBLIC_ORIGIN=${PUBLIC_ORIGIN:-}
+      # Login/register rate limit (in-memory sliding window per client, ADR 0011):
+      # default 10 requests per 60 seconds. Raise for the test stand if needed;
+      # the defaults are intentionally conservative.
+      - RATE_LIMIT_REQUESTS_PER_MINUTE=${RATE_LIMIT_REQUESTS_PER_MINUTE:-}
+      - RATE_LIMIT_WINDOW_SECONDS=${RATE_LIMIT_WINDOW_SECONDS:-}
+      # Trusted proxies (comma-separated IPs) / networks (comma-separated CIDRs)
+      # allowed to identify the real client via X-Forwarded-For. Empty by
+      # default: the client key is always the direct socket peer.
+      - KNOWN_PROXIES=${KNOWN_PROXIES:-}
+      - KNOWN_NETWORKS=${KNOWN_NETWORKS:-}
     depends_on:
       - web
       - frontend
@@ -74,20 +84,31 @@ services:
   frontend-dev:
     image: node:20.19.5-alpine3.22
     profiles: ["dev"]
+    # Run as the host user (UID/GID from the shell or infra/.env) so anything
+    # written through the /app bind mount belongs to the developer, not root.
+    user: "${UID:-1000}:${GID:-1000}"
     working_dir: /app
     volumes:
       - ../frontend:/app
+      # node_modules lives in a named volume, never on the host bind mount:
+      # the host tree stays clean (no root-owned leftovers) and the npm cache
+      # survives container restarts. Ownership is fixed by
+      # vite-node-modules-init (infra/compose.dev.yml, make up-dev).
+      - vite-node-modules:/app/node_modules
     environment:
       # base "/" (not /spa/): the user opens http://localhost:5173/spa/**
       # directly (Vite SPA-fallback serves index.html) AND the Gateway route
       # /spa/** strips the prefix before forwarding, so Vite must expect
       # unprefixed paths.
       - GATEWAY_URL=http://gateway:8080
+      # Container-local HOME: the npm cache must never land on a bind mount.
+      - HOME=/tmp
     command: ["sh", "-c", "npm ci --no-audit --no-fund && npm run dev"]
     ports:
       - "127.0.0.1:5173:5173"
     depends_on:
-      - gateway
+      gateway:
+        condition: service_started
     networks:
       - app-network
 
@@ -124,3 +145,6 @@ networks:
 volumes:
   pgdata:
   miniodata:
+  # Vite/npm for the dev profile; mounted at /app/node_modules in frontend-dev
+  # so the host bind mount ../frontend stays free of node_modules leftovers.
+  vite-node-modules:
