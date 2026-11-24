@@ -132,7 +132,7 @@ services:
     command: server -s3 -s3.port=9000 -s3.allowedOrigins=${S3_CORS_ORIGINS:-http://localhost:18080,http://127.0.0.1:18080} -dir=/data
     ports:
       - "127.0.0.1:${S3_PUBLIC_PORT:-9000}:9000"
-      - "127.0.0.1:8888:8888"
+      - "127.0.0.1:${S3_FILER_PORT:-8888}:8888"
     volumes:
       - miniodata:/data
     networks:

@@ -14,9 +14,14 @@ DOTNET_SDK_10_IMG := mcr.microsoft.com/dotnet/sdk:10.0
 # removed after the run, even when the tests fail.
 E2E_PORT ?= 18090
 E2E_S3_PORT ?= 19000
-COMPOSE_E2E := $(COMPOSE) -p 3dpaint-e2e \
-    -e WEB_PORT=$(E2E_PORT) -e S3_PUBLIC_PORT=$(E2E_S3_PORT) \
-    -e RATE_LIMIT_REQUESTS_PER_MINUTE=100
+E2E_FILER_PORT ?= 18888
+# Environment variables are prepended to the compose command: they take
+# precedence over infra/.env and apply only to this stand. The S3 filer UI
+# port (a dev convenience) gets its own published port so the stand can run
+# alongside the main stack.
+COMPOSE_E2E := WEB_PORT=$(E2E_PORT) S3_PUBLIC_PORT=$(E2E_S3_PORT) \
+    S3_FILER_PORT=$(E2E_FILER_PORT) \
+    RATE_LIMIT_REQUESTS_PER_MINUTE=100 $(COMPOSE) -p 3dpaint-e2e
 E2E_DOWN := docker compose -f infra/compose.yml -f infra/compose.override.yml \
     -p 3dpaint-e2e down --volumes --remove-orphans
 
