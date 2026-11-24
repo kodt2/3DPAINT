@@ -11,9 +11,11 @@ import { defineConfig } from '@playwright/test';
  *   2. http://localhost:{WEB_PORT} (the port published by infra/compose.yml);
  *   3. http://localhost:8080 (project default from infra/env/.env.example).
  */
-const baseURL =
+export const E2E_BASE_URL =
   process.env.E2E_BASE_URL ??
   (process.env.WEB_PORT ? `http://localhost:${process.env.WEB_PORT}` : 'http://localhost:8080');
+
+const baseURL = E2E_BASE_URL;
 
 export default defineConfig({
   testDir: './e2e',

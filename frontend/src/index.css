@@ -104,6 +104,110 @@ body {
   font-size: 1.15rem;
 }
 
+/* Library (step 3c.2) */
+.library-grid {
+  list-style: none;
+  margin: 1.5rem 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr));
+  gap: 1rem;
+}
+
+.library-card {
+  display: grid;
+  gap: 0.4rem;
+  padding: 0.75rem;
+  border: 1px solid #8884;
+  border-radius: 0.5rem;
+}
+
+.library-preview,
+.library-preview-fallback {
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  object-fit: cover;
+  border-radius: 0.35rem;
+}
+
+.library-preview-fallback {
+  display: grid;
+  place-items: center;
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: #9ca4bc;
+  border: 1px dashed #8886;
+}
+
+.library-card-name {
+  margin: 0;
+  font-size: 1rem;
+  overflow-wrap: anywhere;
+}
+
+.library-card-meta {
+  margin: 0;
+  color: #9ca4bc;
+  font-size: 0.9rem;
+}
+
+.library-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.library-card-actions button {
+  padding: 0.35rem 0.7rem;
+  cursor: pointer;
+}
+
+.library-card-actions button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.library-card-actions .danger {
+  border: 1px solid #c62828;
+  border-radius: 0.3rem;
+  background: transparent;
+  color: #c62828;
+}
+
+.library-confirm-question {
+  font-weight: 600;
+}
+
+.library-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  margin-top: 1.5rem;
+}
+
+.library-pagination button {
+  padding: 0.4rem 0.9rem;
+  cursor: pointer;
+}
+
+.library-pagination button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
 .library-logout {
   margin-top: 1rem;
+}
+
+.library-logout button {
+  padding: 0.5rem 1rem;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.library-logout button:disabled {
+  cursor: wait;
+  opacity: 0.6;
 }

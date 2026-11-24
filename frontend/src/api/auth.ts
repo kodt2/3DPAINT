@@ -39,7 +39,8 @@ export class ApiError extends Error {
   }
 }
 
-function asProblem(value: unknown): ProblemBody | undefined {
+/** Extract the ProblemDetails body (RFC 7807) from an openapi-fetch error. */
+export function problemFrom(value: unknown): ProblemBody | undefined {
   return value && typeof value === 'object' ? (value as ProblemBody) : undefined;
 }
 
@@ -54,7 +55,7 @@ export async function login(login: string, password: string): Promise<AuthUser> 
   if (response.ok && data) {
     return data;
   }
-  throw new ApiError(response.status, asProblem(error));
+  throw new ApiError(response.status, problemFrom(error));
 }
 
 /** POST /api/auth/register — 201 with the user; the cookie is set too. */
@@ -70,7 +71,7 @@ export async function register(input: {
   if (response.ok && data) {
     return data;
   }
-  throw new ApiError(response.status, asProblem(error));
+  throw new ApiError(response.status, problemFrom(error));
 }
 
 /** POST /api/auth/logout — removes the cookie (idempotent, anonymous-safe). */

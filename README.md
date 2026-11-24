@@ -58,7 +58,7 @@ make up   # = docker compose -f infra/compose.yml -f infra/compose.override.yml 
 Приложение: `http://localhost:${WEB_PORT:-8080}` (если порт 8080 занят —
 `WEB_PORT=18080` в `infra/.env`).
 
-Полезные команды: `make down`, `make logs`, `make build`.
+Полезные команды: `make down`, `make logs`, `make build`, `make e2e`.
 
 ## SPA (frontend, с подшага 3a)
 
@@ -74,9 +74,18 @@ make up   # = docker compose -f infra/compose.yml -f infra/compose.override.yml 
 | всё остальное | монолит (Razor-страницы, статика) |
 
 SPA доступен по `http://localhost:${WEB_PORT}/spa/`: `/spa/login`,
-`/spa/register` и защищённый `/spa/library` (пока заглушка, список моделей —
-в подшаге 3c.2). Старые Razor-страницы остаются на прежних URL
-(`/`, `/Account/Auth`, `/Home/Index`).
+`/spa/register` и защищённый `/spa/library` (с шага 3c.2: список моделей,
+presigned-превью, пагинация, удаление с подтверждением). Старые Razor-страницы
+остаются на прежних URL (`/`, `/Account/Auth`, `/Home/Index`).
+
+**Библиотека (с шага 3c.2, ADR 0013).** SPA ходит в новый JSON-эндпоинт
+монолита `/api/models` (`GET` список с `page`/`pageSize` 1..100, `GET`/{id}
+деталь с presigned-ссылками, `DELETE`/{id} — запись + S3-объекты, повторный
+`DELETE` идемпотентен). Владелец проверяется в самом SQL
+(`id = @id AND user_id = @userId`): чужой `id` — обычный `404`. DTO не
+несут внутренних хостов, S3-ключей как отдельных полей и данных владельца.
+Маршрут совпадает с целевым API из ARCHITECTURE.md §7.2 — в Фазе 5 меняется
+только бэкенд. Старые Razor-эндпоинты `/api/files/**` не тронуты.
 
 Режим HMR для работы над фронтендом (опционально):
 
@@ -93,19 +102,26 @@ production-стек этот origin не попадает (ADR 0011 §6.1). Vite
 именованном томе — в `frontend/` не остаётся root-файлов.
 
 Тесты фронтенда: `npm run lint`, `npm test` (Vitest), `npm run build`,
-E2E — `npm run test:e2e` (Playwright, ходит **через Gateway**;
-базовый URL — `E2E_BASE_URL` или `http://localhost:${WEB_PORT}`,
-например `WEB_PORT=18080 npx playwright test`).
+E2E — **`make e2e`** (Playwright, ходит **через Gateway** отдельного
+tестового стенда: свой compose-проект `3dpaint-e2e`, свой порт
+`E2E_PORT`, по умолчанию 18090, и временный лимит входа
+`RATE_LIMIT_REQUESTS_PER_MINUTE=100`). Основной стек и production-дефолты
+не трогаются, а по завершении стенд гасится вместе со своими данными —
+прогоны можно повторять, не упираясь в лимит. Если порты заняты:
+`make e2e E2E_PORT=18190 E2E_S3_PORT=19100 E2E_FILER_PORT=18898` Ручной прогон против уже
+поднятого стека: `cd frontend && E2E_BASE_URL=http://localhost:${WEB_PORT} npx playwright test`
+(лимит входа 10/60 с может сработать при повторных прогонах).
 
 **Rate limiting входа (с шага 3c.1a, ADR 0011 §6.2).** Gateway ограничивает
 `POST /api/auth/login` и `POST /api/auth/register`: по умолчанию **10
 запросов на 60 секунд на клиента**, при превышении — `429`
 (ProblemDetails + `Retry-After`). Лимит настраивается env
-`RATE_LIMIT_REQUESTS_PER_MINUTE` / `RATE_LIMIT_WINDOW_SECONDS`; для
-повторяющихся E2E-прогонов поднимите его (`RATE_LIMIT_REQUESTS_PER_MINUTE=100
-make up`) — production-дефолт намеренно консервативен. Ключ клиента — IP
-прямого соединения; `X-Forwarded-For` учитывается только от доверенного
-прокси (`KNOWN_PROXIES` / `KNOWN_NETWORKS`, по умолчанию пусты).
+`RATE_LIMIT_REQUESTS_PER_MINUTE` / `RATE_LIMIT_WINDOW_SECONDS` —
+production-дефолт намеренно консервативен (повторные E2E-прогоны идут
+через тестовый стенд `make e2e` с временным лимитом 100/мин). Ключ
+клиента — IP прямого соединения; `X-Forwarded-For` учитывается только от
+доверенного прокси (`KNOWN_PROXIES` / `KNOWN_NETWORKS`, по умолчанию
+пусты).
 
 Типы API-клиента генерируются из OpenAPI монолита (`npm run gen:api` в
 `frontend/`, требует работающий dev-стэк; upload-эндпоинт в документе пока не

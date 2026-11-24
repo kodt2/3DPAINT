@@ -66,10 +66,13 @@
 | `/Home/Index` | GET | главная страница — «библиотека ассетов» (Razor) | **JWT** |
 | `/api/files` | GET | JSON-список файлов текущего пользователя: `id, fileName, fileSize, createdAt, previewUrl` (presigned 30 мин), `thumbnailUrl` (presigned 30 мин) | **JWT** |
 | `/api/files/upload` | POST | multipart `file`: whitelist расширений (STL/OBJ/STEP/STP/GLB) + размер ≤ 500 MiB; пишет файл в S3 (`{userId}/{fileId}{ext}`) и SVG-заглушку (`{userId}/thumbnails/{fileId}.svg`); JSON-ответ как в `/api/files` | **JWT** |
+| `/api/models` | GET | (с шага 3c.2, ADR 0013) страница моделей текущего пользователя: `items` (`id, name, sizeBytes, createdAt, thumbnailUrl` — presigned по публичному эндпоинту), `page, pageSize, totalCount, totalPages`; `pageSize` 1..100 (дефолт 20), иначе `400` ProblemDetails; сортировка — новые сначала | **JWT** |
+| `/api/models/{id}` | GET | (с шага 3c.2) деталь модели: как карточка + `downloadUrl` (presigned); чужой/несуществующий `id` — `404` (owner-check в SQL) | **JWT** |
+| `/api/models/{id}` | DELETE | (с шага 3c.2) удаление записи + S3-объектов (оригинал + thumbnail; сначала S3, потом БД, ошибка S3 — `500`); повторный `DELETE` — `404` (идемпотентность); чужой `id` — `404` | **JWT** |
 | `wwwroot/*` | GET | статика (см. §6) | публичный |
 
 Прочее:
-- **Нет** logout, refresh, `/api/auth/me`, удаления файлов, скачивания отдельным эндпоинтом (только presigned URL).
+- (до 3c.2) не было logout, refresh, `/api/auth/me`, удаления файлов; теперь: `POST /api/auth/logout`, `GET /api/me` (с 3c.1), удаление — `DELETE /api/models/{id}` (с 3c.2). Скачать отдельным эндпоинтом нельзя — только presigned URL.
 - **Нет** health-эндпоинтов (`/health/live`, `/health/ready` отсутствуют).
 - `UseHttpsRedirection()` подключён, но HTTPS-эндпоинт не опубликован — фактически ничего не делает (в проде TLS режет внешний nginx, конфига которого **нет в репозитории**, см. README).
 - В режиме `Production` обработчик исключений указывает на `/Home/Error`, **которого не существует** (нет такого action в `HomeController`) → необработанное исключение = 500 с пустым телом (TD-5).
@@ -196,6 +199,10 @@
 - [ ] (с шага 3b.0) `GET /swagger/v1/swagger.json` в dev-стэке → 200; в Production-подобном → 404.
 - [ ] (с шага 3b.0) Razor-формы работают как раньше (логин/регистрация через `/Account/Auth`), т.к. Origin-проверка не трогает не-`/api` пути.
 - [ ] (с шага 3c.1a) `POST /api/auth/login` 11 раз подряд от одного клиента → первые 10 доходят до монолита, 11-й → **429** `application/problem+json` + заголовок `Retry-After` (rate limit Gateway, ADR 0011 §6.2).
+- [ ] (с шага 3c.2) `GET /api/models` (JWT) → только свои модели, `pageSize=1000` → **400**; без cookie → **401**.
+- [ ] (с шага 3c.2) `GET`/`DELETE /api/models/{чужой-id}` от другого пользователя → **404** (не 403), модель владельца на месте.
+- [ ] (с шага 3c.2) `DELETE /api/models/{id}` → **204**; повторный `DELETE` → **404**; старый presigned URL после удаления не открывается.
+- [ ] (с шага 3c.2) `/spa/library`: список с превью и пагинацией, удаление с подтверждением; DTO без `storage:`, S3-ключей-полей и данных владельца (E2E: `make e2e`).
 
 ## 11. Инвентарь экранов (составлен 2026-11-23, шаг 3a; субагент + сверка главным агентом)
 
@@ -227,7 +234,7 @@ Layout'ы: `_HomeLayout` (только Google Fonts + `css/home-dashboard.css`),
 |---|---|---|
 | `/spa/` (каркас, connection-check) | `GET /api/health` (публичный), `GET /api/me` (JWT) | ✅ добавлены (`ApiStatusController`) |
 | Вход/регистрация (E1) | `POST /api/auth/login`, `POST /api/auth/register`, `POST /api/auth/logout`, `GET /api/me` | ✅ сделано в 3c.1 (`AuthApiController`, типизированные OpenAPI-ответы; SPA-экраны `/spa/login`, `/spa/register`) |
-| Библиотека моделей (E2) | `GET /api/files` (уже есть), `POST /api/files/upload` (уже есть, но **исключён из OpenAPI** — Swashbuckle не моделирует `[FromForm] IFormFile`), `DELETE /api/files/{id}`, `GET /api/files/{id}` (метаданные+свежие presigned) | ⏳ `DELETE`/`GET {id}` — новые, сделать при переносе |
+| Библиотека моделей (E2) | `GET /api/models` (страница), `GET /api/models/{id}`, `DELETE /api/models/{id}`; upload — `POST /api/files/upload` (уже есть, но **исключён из OpenAPI** — Swashbuckle не моделирует `[FromForm] IFormFile`) | ✅ сделано в 3c.2 (`ModelsApiController`, ADR 0013: owner-check в SQL, чистые DTO, idempotent delete); старые `/api/files/**` не тронуты |
 | 3D-вьюер модели (**новая функция**, не перенос) | `GET /api/files/{id}/preview` (свежий presigned GET) | ⏳ сделать вместе со вьюером (3c) |
 | Paint (ADR 0010, Фаза 6.5) | `POST /api/files/{id}/textures` (версии текстур), `GET /api/files/{id}/textures` | ⏳ не в Фазе 3 |
 
@@ -239,7 +246,9 @@ Layout'ы: `_HomeLayout` (только Google Fonts + `css/home-dashboard.css`),
 
 `frontend/`: React 19 + Vite 7 + TS strict, ESLint 9 + Prettier, Vitest (jsdom) + Playwright (E2E), `openapi-fetch` + сгенерированные типы (`npm run gen:api` из OpenAPI монолита, `Swashbuckle 7.2.0`, только `/api/**`). Dockerfile multi-stage → nginx (SPA-fallback, immutable-кэш `/assets/`). Сервисы compose: `frontend` (nginx) и `frontend-dev` (Vite HMR, профиль `dev`, `make up-dev`). Маршруты Gateway: `/api/**` → монолит, `/assets/**`, `/spa/**` → frontend, остальное → монолит (ADR 0011). (с шага 3b.0) До reverse proxy в Gateway работает `OriginCheckMiddleware`: мутации `/api/**` без `Origin`/`Referer` совпадающего с публичным origin Gateway отклоняются `403` ProblemDetails (ADR 0011 §6).
 
-(с шага 3c.1) Экраны: `/spa/login` и `/spa/register` (JSON-эндпоинты `AuthApiController`), защищённый `/spa/library` (пока заглушка «Здравствуйте, …» + logout; список моделей придёт в 3c.2), `/spa/` — редирект по результату `GET /api/me`. Состояние авторизации — TanStack Query (`useMe()`, `queryKey ['me']`), маршруты — React Router (`basename="/spa"`), ошибки — из ProblemDetails (`detail` + полевые `errors`). Тесты: Vitest (unit, `MemoryRouter`, моки `openapi-fetch`) и Playwright (E2E `e2e/auth.spec.ts`, базовый URL — `http://localhost:{WEB_PORT}`, т.е. через Gateway; `npm run test:e2e`, `WEB_PORT=<порт> npx playwright test`).
+(с шага 3c.1) Экраны: `/spa/login` и `/spa/register` (JSON-эндпоинты `AuthApiController`), защищённый `/spa/library`, `/spa/` — редирект по результату `GET /api/me`. Состояние авторизации — TanStack Query (`useMe()`, `queryKey ['me']`), маршруты — React Router (`basename="/spa"`), ошибки — из ProblemDetails (`detail` + полевые `errors`). Тесты: Vitest (unit, `MemoryRouter`, моки `openapi-fetch`) и Playwright (E2E `e2e/auth.spec.ts` + `e2e/library.spec.ts` + общие хелперы `e2e/helpers.ts`, базовый URL — `http://localhost:{WEB_PORT}`, т.е. через Gateway; `npm run test:e2e`, `WEB_PORT=<порт> npx playwright test`, изолированный стенд — `make e2e`).
+
+(с шага 3c.2) `/spa/library` — библиотека моделей: список от `GET /api/models` (TanStack Query, типизированный клиент `src/api/models.ts` из OpenAPI), presigned-превью (при истёкшем URL — один повтор запроса списка на страницу, дальше фолбэк), пагинация (стрелки + «Стр. X из Y»), удаление с inline-подтверждением (ошибка — `role="alert"` из ProblemDetails). Бэкенд: `ModelsApiController` (`/api/models`, ADR 0013) — owner-check в SQL (`id = @id AND user_id = @userId`, чужой `id` — `404`), DTO без внутренних хостов/S3-ключей/данных владельца, `DELETE` — сначала S3-объекты (оригинал + thumbnail), потом запись в БД, повторный `DELETE` — `404`. Тесты: 7 unit-тестов библиотеки (Vitest), E2E `e2e/library.spec.ts` (список, whitelist DTO + отрицательные проверки, IDOR 404, удаление с проверкой исчезновения S3-объектов и идемпотентности, пагинация на 21 модели, `pageSize=1000` → 400) — `make e2e` 10/10 дважды подряд.
 
 (с шага 3c.1) Origin-проверка Gateway усилена: сравнение разбором URL (`scheme + host + порт`), не строковым префиксом — `Referer: http://localhost:8080.evil.com` → `403`, `https://example.com:443` == `https://example.com`, литерал `Origin: null` → `403`; найден и исправлен баг: env `PUBLIC_ORIGIN` читался как `PublicOrigin` (case-sensitive lookup в .NET 10) и молча игнорировался — регрессионный тест добавлен. Dev-профиль (`make up-dev`) через `infra/compose.dev.yml` добавляет в `PUBLIC_ORIGIN` origin Vite-сервера `http://localhost:5173` (браузер ходит в Vite, `/api` проксируется в Gateway); в production-стек этот origin не попадает (проверено: `make up` + `Origin: http://localhost:5173` → `403`).
 
