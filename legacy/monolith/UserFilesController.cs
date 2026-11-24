@@ -98,6 +98,15 @@ public class UserFilesController : ControllerBase
                 title: "File too large",
                 statusCode: StatusCodes.Status413PayloadTooLarge);
         }
+        catch (InvalidGlbFileException ex)
+        {
+            // ProblemDetails on purpose (step 3c.4 contract); the legacy Razor
+            // upload UI falls back to its generic error text for this case.
+            return Problem(
+                detail: ex.Message,
+                title: "Invalid GLB file",
+                statusCode: StatusCodes.Status400BadRequest);
+        }
         catch (InvalidOperationException ex)
         {
             return BadRequest(new { message = ex.Message });
