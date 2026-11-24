@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { buildCorruptGlb, buildCubeGlb } from '../src/test/glbfactory';
+import { buildCubeGlb, buildHeaderValidCorruptGlb } from '../src/test/glbfactory';
 import { apiHeaders, baseUrl, registerViaUi, uniqueLogin } from './helpers';
 
 /**
@@ -95,7 +95,10 @@ test('a corrupt file shows the friendly parse error', async ({ page }) => {
   const login = uniqueLogin('e2e_badglb');
   await registerViaUi(page, login);
   await expect(page).toHaveURL(/\/spa\/library/);
-  const model = await uploadGlbBuffer(page, 'corrupt.glb', buildCorruptGlb());
+  // A valid GLB container header (passes the server's magic-byte
+  // validation, step 3c.4) but a garbage JSON chunk: the viewer's parse
+  // must fail with the friendly message.
+  const model = await uploadGlbBuffer(page, 'corrupt.glb', buildHeaderValidCorruptGlb());
 
   await openViewer(page, model.id);
   await expect(

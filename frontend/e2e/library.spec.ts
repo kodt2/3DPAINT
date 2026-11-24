@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { E2E_MONOLITH_URL } from '../playwright.config';
-import { buildLargeGlb } from '../src/test/glbfactory';
+import { buildExactSizeGlb, buildLargeGlb } from '../src/test/glbfactory';
 import { apiHeaders, baseUrl, registerViaUi, uniqueLogin, uploadModel } from './helpers';
 
 /**
@@ -224,4 +224,34 @@ test('the monolith rejects an over-limit file directly (413, without the gateway
   expect(response.status()).toBe(413);
   const body = (await response.json().catch(() => null)) as { title?: string } | null;
   expect(body?.title).toBe('File too large');
+});
+
+test('a file exactly at the limit passes the gateway (envelope slack, ADR 0015)', async ({
+  page,
+}) => {
+  // The body-level limit applies to the whole multipart body (file bytes +
+  // boundary/headers), so a file of exactly MAX_UPLOAD_BYTES must still pass
+  // the Gateway: both edges use the limit + 1 MiB envelope slack and the
+  // monolith's app-level check (file size vs the limit) is authoritative.
+  // Without the slack this request would die with a bare 413 in the Gateway.
+  const login = uniqueLogin('e2e_exact');
+  await registerViaUi(page, login);
+  await expect(page).toHaveURL(/\/spa\/library/);
+
+  const config = (await (
+    await page.request.get(`${baseUrl}/api/config`)
+  ).json()) as { maxUploadBytes: number };
+  const glb = buildExactSizeGlb(config.maxUploadBytes);
+  expect(new Uint8Array(glb).length).toBe(config.maxUploadBytes);
+
+  const response = await page.request.post(`${baseUrl}/api/files/upload`, {
+    headers: await apiHeaders(page),
+    multipart: {
+      file: { name: 'exact-limit.glb', mimeType: 'model/gltf-binary', buffer: Buffer.from(glb) },
+    },
+  });
+  expect(response.status()).toBe(200);
+  const body = (await response.json()) as { fileName: string; fileSize: number };
+  expect(body.fileName).toBe('exact-limit.glb');
+  expect(body.fileSize).toBe(config.maxUploadBytes);
 });
