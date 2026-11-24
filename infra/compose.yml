@@ -129,7 +129,11 @@ services:
     # The S3 port is published on 127.0.0.1 so the browser can use presigned URLs
     # directly (TD-3); CORS origins are configured via S3_CORS_ORIGINS.
     image: chrislusf/seaweedfs:4.54
-    command: server -s3 -s3.port=9000 -s3.allowedOrigins=${S3_CORS_ORIGINS:-http://localhost:18080,http://127.0.0.1:18080} -dir=/data
+    # CORS: the SPA fetches presigned URLs from JS (viewer, step 3c.3), so
+    # every origin the SPA can be served from needs to be listed here:
+    # the gateway (8080, 18080 fallback), the Vite dev server (5173) and the
+    # e2e gateway (18090), each via localhost and 127.0.0.1.
+    command: server -s3 -s3.port=9000 -s3.allowedOrigins=${S3_CORS_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080,http://localhost:18080,http://127.0.0.1:18080,http://localhost:5173,http://127.0.0.1:5173,http://localhost:18090,http://127.0.0.1:18090} -dir=/data
     ports:
       - "127.0.0.1:${S3_PUBLIC_PORT:-9000}:9000"
       - "127.0.0.1:${S3_FILER_PORT:-8888}:8888"

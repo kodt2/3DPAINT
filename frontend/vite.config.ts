@@ -13,6 +13,12 @@ const base = process.env.VITE_BASE ?? '/';
 export default defineConfig({
   base,
   plugins: [react()],
+  build: {
+    // The lazy ViewerPage chunk contains the whole three.js stack
+    // (step 3c.3); ~1 MB minified is inherent to it, so silence the
+    // generic 500 kB warning instead of pretending the chunk is small.
+    chunkSizeWarningLimit: 1100,
+  },
   server: {
     host: true,
     port: 5173,
