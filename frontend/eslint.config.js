@@ -5,11 +5,7 @@ import reactRefresh from 'eslint-plugin-react-refresh';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  {
-    // node_modules.root-owned: a node_modules tree created by a root npm run;
-    // it cannot be removed without sudo, so it stays ignored until then.
-    ignores: ['dist', 'node_modules', 'node_modules.root-owned', 'src/api/schema.ts'],
-  },
+  { ignores: ['dist', 'node_modules', 'src/api/schema.ts'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {

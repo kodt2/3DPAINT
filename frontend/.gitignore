@@ -5,6 +5,3 @@ coverage/
 # Playwright artifacts (E2E, step 3c.1)
 test-results/
 playwright-report/
-# Root-owned node_modules (created by a root npm run) — needs `sudo rm -rf`
-# to remove; ignore until cleaned up.
-node_modules.root-owned/
