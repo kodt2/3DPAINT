@@ -366,3 +366,117 @@ body {
   text-decoration: none;
   font-size: 0.9rem;
 }
+
+/* ===== Upload panel (step 3c.4) ===== */
+.upload-panel {
+  margin: 0 0 1.5rem;
+  padding: 1rem;
+  border: 1px solid #2a2a3a;
+  border-radius: 0.5rem;
+  background: #1a1a24;
+}
+
+.upload-panel h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1.1rem;
+}
+
+.upload-dropzone {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.75rem;
+  border: 1px dashed #3a3a4e;
+  border-radius: 0.5rem;
+}
+
+.upload-dropzone-active {
+  border-color: #6c8cff;
+  background: rgba(108, 140, 255, 0.08);
+}
+
+.upload-dropzone-hint {
+  color: #8888a0;
+  font-size: 0.85rem;
+}
+
+/* Visually hidden but focusable: the button activates it, the a11y tree
+   still sees a real file input. */
+.upload-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.upload-list {
+  list-style: none;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.upload-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #2a2a3a;
+  border-radius: 0.4rem;
+}
+
+.upload-item-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.upload-item-size {
+  color: #8888a0;
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.upload-item-control {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.upload-item-status {
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.upload-item-error-text {
+  color: #ff8f8f;
+}
+
+.upload-item-done .upload-item-status {
+  color: #7fd6a4;
+}
+
+.upload-progress {
+  display: inline-block;
+  width: 8rem;
+  height: 0.4rem;
+  border-radius: 0.2rem;
+  background: #2a2a3a;
+  overflow: hidden;
+}
+
+.upload-progress-fill {
+  display: block;
+  height: 100%;
+  background: #6c8cff;
+  transition: width 0.2s ease;
+}
