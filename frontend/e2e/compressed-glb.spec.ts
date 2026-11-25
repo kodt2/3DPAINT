@@ -1,10 +1,20 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from '@playwright/test';
 import {
   buildDracoCubeGlb,
   buildMeshoptCubeGlb,
   buildMeshoptQuantCubeGlb,
 } from '../src/test/gltf-fixture';
-import { apiHeaders, baseUrl, registerViaUi, uniqueLogin } from './helpers';
+import {
+  baseUrl,
+  expectOnlyLocalRequests,
+  infoRow,
+  openViewer,
+  registerViaUi,
+  trackRequests,
+  uniqueLogin,
+  uploadGlbBuffer,
+  waitForDrawn,
+} from './helpers';
 
 /**
  * Step 3c.5 E2E: compressed GLB files (Draco, Meshopt, Meshopt+quantization)
@@ -16,83 +26,6 @@ import { apiHeaders, baseUrl, registerViaUi, uniqueLogin } from './helpers';
  * 24 corner vertices, 12 triangles. Draco additionally welds the 24 corner
  * copies into 8 unique points — that is the expected info-panel row.
  */
-
-const DRAWN_TIMEOUT = 30_000;
-
-/** Uploads an arbitrary GLB payload under the given file name. */
-async function uploadGlbBuffer(
-  page: Page,
-  fileName: string,
-  glb: ArrayBuffer,
-): Promise<{ id: string }> {
-  const response = await page.request.post(`${baseUrl}/api/files/upload`, {
-    headers: await apiHeaders(page),
-    multipart: {
-      file: {
-        name: fileName,
-        mimeType: 'model/gltf-binary',
-        buffer: Buffer.from(glb),
-      },
-    },
-  });
-  if (response.status() !== 200) {
-    throw new Error(`upload failed: ${response.status()} ${await response.text()}`);
-  }
-  const body = (await response.json()) as { id: string };
-  return { id: body.id };
-}
-
-async function openViewer(page: Page, id: string) {
-  await page.goto(`/spa/models/${id}`);
-}
-
-async function waitForDrawn(page: Page) {
-  await expect
-    .poll(async () => page.locator('.viewer-canvas-wrap').getAttribute('data-viewer-drawn'), {
-      timeout: DRAWN_TIMEOUT,
-    })
-    .toBe('true');
-}
-
-function infoRow(page: Page, label: string) {
-  const panel = page.getByRole('complementary', { name: 'Информация о модели' });
-  return panel.locator('.viewer-info-list > div').filter({ hasText: label });
-}
-
-/**
- * Collects every network request the page makes (blob:/data: worker URLs are
- * excluded — they are in-memory, not network).
- */
-function trackRequests(page: Page): string[] {
-  const urls: string[] = [];
-  page.on('request', (request) => {
-    const url = request.url();
-    if (!url.startsWith('blob:') && !url.startsWith('data:')) {
-      urls.push(url);
-    }
-  });
-  return urls;
-}
-
-/**
- * ADR 0014: the viewer must not fetch decoders (or anything else) from a
- * third-party host. In the e2e stand every legitimate target is local:
- * the Gateway origin (SPA, decoder assets) and the S3 endpoint (the
- * presigned model download).
- */
-function expectOnlyLocalRequests(urls: string[]) {
-  const external = urls.filter((url) => {
-    let parsed: URL;
-    try {
-      parsed = new URL(url);
-    } catch {
-      return false;
-    }
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
-    return parsed.hostname !== 'localhost' && parsed.hostname !== '127.0.0.1';
-  });
-  expect(external, `external requests: ${external.join(', ')}`).toEqual([]);
-}
 
 test('a Draco GLB renders with the locally served draco decoder', async ({ page }) => {
   const login = uniqueLogin('e2e_draco');
