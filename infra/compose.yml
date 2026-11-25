@@ -71,6 +71,11 @@ services:
       - PUBLIC_S3_ENDPOINT=${PUBLIC_S3_ENDPOINT:-http://localhost:${S3_PUBLIC_PORT:-9000}}
       # Single upload limit shared with the Gateway (ADR 0015).
       - MaxUploadBytes=${MAX_UPLOAD_BYTES:-104857600}
+      # Accepted upload extensions (comma-separated, step 4.0). Single source
+      # of truth: the server-side validation AND the public /api/config read
+      # this same value, so the SPA and the server can never disagree. Default
+      # is .glb (the SPA viewer is GLB-only).
+      - AllowedUploadExtensions=${ALLOWED_UPLOAD_EXTENSIONS:-.glb}
     depends_on:
       - db
       - storage

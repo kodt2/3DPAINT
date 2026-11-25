@@ -18,13 +18,6 @@ namespace LoginAndReg.Controllers
     [Route("api/config")]
     public class ConfigApiController : ControllerBase
     {
-        /// <summary>
-        /// Extensions the SPA upload accepts. This is an SPA-level decision
-        /// (the viewer is GLB-only); it is narrower than the monolith upload
-        /// whitelist (FileStorageService).
-        /// </summary>
-        private static readonly string[] SpaUploadExtensions = [".glb"];
-
         private readonly UploadOptions _uploadOptions;
 
         public ConfigApiController(IOptions<UploadOptions> uploadOptions)
@@ -32,7 +25,12 @@ namespace LoginAndReg.Controllers
             _uploadOptions = uploadOptions.Value;
         }
 
-        /// <summary>GET /api/config — upload limits and accepted extensions for the SPA.</summary>
+        /// <summary>
+        /// GET /api/config — upload limits and accepted extensions for the SPA.
+        /// The extension list is the same single source of truth the server
+        /// side validates against (FileStorageService, step 4.0): the SPA and
+        /// the server can never disagree.
+        /// </summary>
         [HttpGet]
         [ProducesResponseType(typeof(ConfigDto), StatusCodes.Status200OK)]
         public IActionResult Get()
@@ -40,7 +38,7 @@ namespace LoginAndReg.Controllers
             return Ok(new ConfigDto
             {
                 MaxUploadBytes = _uploadOptions.MaxBytes,
-                AllowedUploadExtensions = SpaUploadExtensions
+                AllowedUploadExtensions = _uploadOptions.AllowedExtensions.ToArray()
             });
         }
     }

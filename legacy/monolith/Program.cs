@@ -40,7 +40,16 @@ builder.WebHost.ConfigureKestrel(options =>
     options.Limits.MaxRequestBodySize = maxUploadBytes + UploadOptions.BodySlack;
 });
 
-builder.Services.Configure<UploadOptions>(options => options.MaxBytes = maxUploadBytes);
+// Accepted upload extensions (step 4.0): a single source of truth shared by
+// the server-side validation (FileStorageService) and the public /api/config,
+// so the SPA and the server can never disagree about which files are allowed.
+var allowedUploadExtensions = ParseAllowedExtensions(builder.Configuration["AllowedUploadExtensions"]);
+
+builder.Services.Configure<UploadOptions>(options =>
+{
+    options.MaxBytes = maxUploadBytes;
+    options.AllowedExtensions = allowedUploadExtensions;
+});
 
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseNpgsql(connectionString));
@@ -358,3 +367,23 @@ app.UseAuthorization();
 app.MapControllers();
 
 app.Run();
+
+/// <summary>
+/// Parses the comma-separated ALLOWED_UPLOAD_EXTENSIONS variable into a
+/// normalized list (leading dot, trimmed, case-insensitive-unique). Falls
+/// back to the default (".glb") when unset or empty. Extensions may be given
+/// with or without a leading dot; the stored form always has one.
+/// </summary>
+static IReadOnlyList<string> ParseAllowedExtensions(string? raw)
+{
+    if (string.IsNullOrWhiteSpace(raw))
+    {
+        return UploadOptions.DefaultAllowedExtensions.Split(',');
+    }
+
+    return raw
+        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Select(e => e.StartsWith('.') ? e : "." + e)
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+}
