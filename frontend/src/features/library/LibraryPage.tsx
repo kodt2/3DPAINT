@@ -4,7 +4,6 @@ import { useQueryClient } from '@tanstack/react-query';
 import { logout, meQueryKey, useMe } from '../../api/auth';
 import { deleteModel, modelsListKey, useModels, type Model } from '../../api/models';
 import { formatDate, formatSize } from '../../lib/format';
-import { ApiCheck } from '../api-check/ApiCheck';
 import { UploadPanel } from '../upload/UploadPanel';
 
 /**
@@ -99,7 +98,6 @@ export function LibraryPage() {
       )}
 
       <LogoutButton />
-      <ApiCheck />
     </main>
   );
 }
