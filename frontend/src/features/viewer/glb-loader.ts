@@ -1,34 +1,40 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { GlbLoadError, type GlbErrorKind } from './glb-errors';
+import { isDecoderAssetUrl } from './decoder-assets';
+import {
+  decoderRequirements,
+  hasDecoderRequirements,
+  unsupportedRequiredExtension,
+} from './decoder-requirements';
+import { readGlbJson } from './glb-json';
+import { DECODE_TIMEOUT_MS } from './viewer-config';
+
+export { GlbLoadError, type GlbErrorKind } from './glb-errors';
 
 /**
- * GLB loading for the viewer (step 3c.3).
+ * GLB loading for the viewer (step 3c.3, decoders in step 3c.5).
  *
- * Autonomy and trust model:
+ * Autonomy and trust model (ADR 0014):
  * - the GLB itself is fetched with a plain fetch() (the presigned S3 URL is
  *   trusted — the API minted it);
  * - parsing runs GLTFLoader.parse() on that buffer, so the only URLs that
  *   can reach the network from inside the document come from the glTF's
  *   own "images" section — those are untrusted;
- * - a LoadingManager URL modifier blocks every URI that is not a local
- *   blob:/data: resource. A blocked URI rejects the parse with a clear
- *   error instead of issuing a request (no CDN, no SSRF, no tracking).
+ * - a LoadingManager URL modifier blocks every URI except local
+ *   blob:/data: resources and the viewer's own decoder assets
+ *   (/assets/decoders/three-<version>/ — same origin, local files). A
+ *   blocked URI rejects the parse with a clear error instead of issuing a
+ *   request (no CDN, no SSRF, no tracking).
  *
- * No Draco/Meshopt decoders are installed on purpose (no WASM from a CDN);
- * compressed geometry fails the parse and the UI shows a clear message.
+ * Decoders (step 3c.5): before parsing, the GLB JSON chunk is inspected.
+ * If the file needs Draco/Meshopt/KTX2, the decoder chunk (glb-decoders)
+ * is imported lazily and exactly the required decoders are installed. If
+ * the file REQUIRES an extension the viewer cannot handle, it is rejected
+ * up front with the extension named (no decode attempt). The decode phase
+ * is bounded by DECODE_TIMEOUT_MS; on timeout/abort the decoders are
+ * disposed.
  */
-
-export type GlbErrorKind = 'http' | 'network' | 'aborted' | 'parse' | 'compression';
-
-export class GlbLoadError extends Error {
-  constructor(
-    message: string,
-    public readonly kind: GlbErrorKind,
-  ) {
-    super(message);
-    this.name = 'GlbLoadError';
-  }
-}
 
 export interface GlbProgress {
   loaded: number;
@@ -47,7 +53,7 @@ export interface ParsedGlb {
 export function createTrustedLoadingManager(): THREE.LoadingManager {
   const manager = new THREE.LoadingManager();
   manager.setURLModifier((url) => {
-    if (url.startsWith('blob:') || url.startsWith('data:')) {
+    if (url.startsWith('blob:') || url.startsWith('data:') || isDecoderAssetUrl(url)) {
       return url;
     }
     // Truncate: the URI is untrusted input and must not be echoed in full.
@@ -56,39 +62,14 @@ export function createTrustedLoadingManager(): THREE.LoadingManager {
   return manager;
 }
 
-/**
- * Parses an in-memory GLB buffer. Embedded image URIs must be blob:/data:
- * or the parse rejects (see createTrustedLoadingManager).
- */
-export function parseGlb(arrayBuffer: ArrayBuffer): Promise<ParsedGlb> {
-  return new Promise((resolve, reject) => {
-    const loader = new GLTFLoader(createTrustedLoadingManager());
-    try {
-      loader.parse(
-        arrayBuffer,
-        '',
-        (gltf) => resolve(gltf as ParsedGlb),
-        (error) => reject(toGlbError(error, 'parse')),
-      );
-    } catch (error) {
-      // GLTFLoader throws synchronously for a broken container (bad magic,
-      // invalid JSON chunk).
-      reject(toGlbError(error, 'parse'));
-    }
-  });
-}
-
-export function toGlbError(error: unknown, kind: GlbErrorKind): GlbLoadError {
-  const message = error instanceof Error ? error.message : String(error);
-  if (kind === 'parse' && /draco|meshopt/i.test(message)) {
-    return new GlbLoadError(message, 'compression');
-  }
-  return new GlbLoadError(message, kind);
-}
-
 export interface LoadGlbOptions {
   signal: AbortSignal;
   onProgress?: (progress: GlbProgress) => void;
+  /**
+   * Decode-phase timeout in ms (default DECODE_TIMEOUT_MS). The download
+   * is not bounded by it — only GLTFLoader.parse() + decoder workers.
+   */
+  decodeTimeoutMs?: number;
 }
 
 /**
@@ -119,14 +100,141 @@ export async function loadGlb(url: string, options: LoadGlbOptions): Promise<Par
     options.onProgress?.({ loaded, total });
   });
 
-  try {
-    return await parseGlb(buffer);
-  } catch (error) {
-    if (error instanceof GlbLoadError) {
-      throw error;
-    }
-    throw toGlbError(error, 'parse');
+  // Inspect the container + glTF JSON BEFORE parsing: which decoders the
+  // file needs and whether it requires an unsupported extension (3c.5).
+  // readGlbJson throws GlbLoadError('parse') on a broken container —
+  // the same failure GLTFLoader would report, one network round-trip
+  // earlier.
+  const gltfJson = readGlbJson(buffer);
+  const unsupported = unsupportedRequiredExtension(gltfJson);
+  if (unsupported !== null) {
+    throw new GlbLoadError(
+      `file requires a glTF extension the viewer does not support: ${unsupported}`,
+      'unsupported-extension',
+      unsupported,
+    );
   }
+
+  const manager = createTrustedLoadingManager();
+  let loader: GLTFLoader;
+  let disposeDecoders: (() => void) | null = null;
+  const requirements = decoderRequirements(gltfJson);
+  if (hasDecoderRequirements(requirements)) {
+    // Lazy chunk: Draco/KTX2 loaders + Meshopt wasm are fetched only when
+    // the file actually needs them (3c.5).
+    const { configureGlbLoader } = await import('./glb-decoders');
+    const configured = configureGlbLoader(manager, requirements);
+    loader = configured.loader;
+    disposeDecoders = configured.dispose;
+  } else {
+    loader = new GLTFLoader(manager);
+  }
+
+  try {
+    return await parseWithGuards(
+      loader,
+      buffer,
+      options.signal,
+      options.decodeTimeoutMs ?? DECODE_TIMEOUT_MS,
+    );
+  } finally {
+    // Success, error, timeout or abort: the decoder workers are done.
+    // (Meshopt's pool cannot be terminated in three r187 — TD-29.)
+    disposeDecoders?.();
+  }
+}
+
+/**
+ * Parses an in-memory GLB buffer with a plain (no-decoder) GLTFLoader.
+ * Kept for tests and for callers that do not need compression support;
+ * the full pipeline is loadGlb.
+ */
+export function parseGlb(arrayBuffer: ArrayBuffer): Promise<ParsedGlb> {
+  return parseWithGuards(
+    new GLTFLoader(createTrustedLoadingManager()),
+    arrayBuffer,
+    new AbortController().signal,
+    DECODE_TIMEOUT_MS,
+  );
+}
+
+/**
+ * GLTFLoader.parse with decode-phase guards:
+ *  - timeout (decodeTimeoutMs) → GlbLoadError('decode-timeout');
+ *  - abort → GlbLoadError('aborted');
+ *  - synchronous throws (broken container) → toGlbError('parse');
+ *  - decode failures for compressed data → kind 'compression'.
+ *
+ * The parse itself cannot be cancelled (GLTFLoader has no cancel API); on
+ * timeout/abort the caller disposes the decoders, which terminates the
+ * worker pools and leaves the hung parse to be garbage-collected.
+ */
+function parseWithGuards(
+  loader: GLTFLoader,
+  buffer: ArrayBuffer,
+  signal: AbortSignal,
+  decodeTimeoutMs: number,
+): Promise<ParsedGlb> {
+  return new Promise<ParsedGlb>((resolve, reject) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const settle = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      if (timer !== null) {
+        clearTimeout(timer);
+      }
+      signal.removeEventListener('abort', onAbort);
+      fn();
+    };
+
+    const onAbort = () => {
+      settle(() => reject(new GlbLoadError('aborted', 'aborted')));
+    };
+
+    timer = setTimeout(
+      () =>
+        settle(() =>
+          reject(
+            new GlbLoadError(
+              `decode did not finish within ${Math.round(decodeTimeoutMs / 1000)} s`,
+              'decode-timeout',
+            ),
+          ),
+        ),
+      decodeTimeoutMs,
+    );
+
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener('abort', onAbort, { once: true });
+
+    try {
+      loader.parse(
+        buffer,
+        '',
+        (gltf) => settle(() => resolve(gltf as ParsedGlb)),
+        (error) => settle(() => reject(toGlbError(error, 'parse'))),
+      );
+    } catch (error) {
+      // GLTFLoader throws synchronously for a broken container (bad magic,
+      // invalid JSON chunk).
+      settle(() => reject(toGlbError(error, 'parse')));
+    }
+  });
+}
+
+export function toGlbError(error: unknown, kind: GlbErrorKind): GlbLoadError {
+  const message = error instanceof Error ? error.message : String(error);
+  // Compressed-data decode failures (Draco/Meshopt/KTX2/BasisU) are a
+  // distinct user-facing case: the file is supported, the payload is bad.
+  if (kind === 'parse' && /draco|meshopt|ktx2|basis/i.test(message)) {
+    return new GlbLoadError(message, 'compression');
+  }
+  return new GlbLoadError(message, kind);
 }
 
 function isAbortError(error: unknown): boolean {

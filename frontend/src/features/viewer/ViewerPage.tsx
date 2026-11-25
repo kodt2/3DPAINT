@@ -7,6 +7,7 @@ import { getModel, type ModelDetail } from '../../api/models';
 import { formatNumber, formatSize } from '../../lib/format';
 import { GlbLoadError, loadGlb, type GlbProgress } from './glb-loader';
 import { computeModelInfo, type ModelInfo } from './model-info';
+import { DECODE_TIMEOUT_MS } from './viewer-config';
 import { ModelScene } from './ModelScene';
 import { isWebGLAvailable } from './webgl';
 
@@ -332,7 +333,11 @@ function friendlyGlbError(error: unknown): string {
   if (error instanceof GlbLoadError) {
     switch (error.kind) {
       case 'compression':
-        return 'Файл использует сжатую геометрию (Draco/Meshopt). Этот формат пока не поддерживается.';
+        return 'Не удалось декодировать сжатые данные файла (Draco/Meshopt/KTX2). Файл повреждён.';
+      case 'unsupported-extension':
+        return `Файл использует glTF-расширение, которое вьюер не поддерживает: ${error.detail ?? 'неизвестное'}.`;
+      case 'decode-timeout':
+        return `Декодирование файла не завершилось за ${DECODE_TIMEOUT_MS / 1000} с. Попробуйте ещё раз или проверьте файл.`;
       case 'http':
         return 'Не удалось скачать файл (ссылка истекла или недоступна).';
       case 'network':
