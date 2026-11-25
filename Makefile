@@ -3,6 +3,11 @@ COMPOSE := docker compose -f infra/compose.yml -f infra/compose.override.yml
 # origin http://localhost:5173 (the browser hits Vite directly, /api is
 # proxied to the Gateway). Never used outside development.
 COMPOSE_DEV := $(COMPOSE) -f infra/compose.dev.yml
+# HTTPS/LAN edge (step H, ADR 0016): Caddy (profile `https`) in front of the
+# gateway and S3; only Caddy's ports are published, on $(BIND_ADDR) (default
+# 127.0.0.1). The gateway/S3 keep their loopback-only ports.
+BIND_ADDR ?= 127.0.0.1
+COMPOSE_HTTPS := $(COMPOSE) -f infra/compose.https.yml --profile https
 MONOLITH_CSPROJ := legacy/monolith/LoginAndReg.csproj
 # The legacy monolith stays on .NET 8; new services use .NET 10 (ADR 0012).
 DOTNET_SDK_8_IMG := mcr.microsoft.com/dotnet/sdk:8.0
@@ -31,7 +36,33 @@ COMPOSE_E2E := WEB_PORT=$(E2E_PORT) S3_PUBLIC_PORT=$(E2E_S3_PORT) \
     $(COMPOSE) -p 3dpaint-e2e -f infra/compose.e2e.yml
 E2E_DOWN := $(COMPOSE) -p 3dpaint-e2e down --volumes --remove-orphans
 
-.PHONY: up up-dev down logs build test e2e
+# HTTPS E2E stand (step H): the same full suite, but the browser talks to
+# Caddy (internal CA) over https: the site on E2E_HTTPS_PORT and the S3
+# presigned endpoint on E2E_S3_HTTPS_PORT (both via Caddy, own project and
+# ports so the stand can run alongside `make e2e`). Chromium trusts Caddy's
+# root CA via --ignore-certificate-errors-spki-list (the SHA-256 of its
+# SPKI, extracted from the caddy container after the first TLS handshake —
+# see E2E_CUSTOM_CA in frontend/playwright.config.ts).
+E2E_HTTPS_PORT ?= 18443
+E2E_S3_HTTPS_PORT ?= 19443
+E2E_HTTPS_WEB_PORT ?= 18083
+# Origins are localhost only (no 127.0.0.1): in lan mode Caddy's internal
+# cert covers the SNI host MAIN_HOST, so a browser on 127.0.0.1 would fail
+# the TLS handshake.
+COMPOSE_E2E_HTTPS := \
+    BIND_ADDR=127.0.0.1 \
+    HTTP_PORT=18082 HTTPS_PORT=$(E2E_HTTPS_PORT) S3_HTTPS_PORT=$(E2E_S3_HTTPS_PORT) \
+    MAIN_HOST=localhost S3_HOST=localhost TLS_MODE=lan \
+    PUBLIC_ORIGIN=https://localhost:$(E2E_HTTPS_PORT) \
+    PUBLIC_S3_ENDPOINT=https://localhost:$(E2E_S3_HTTPS_PORT) \
+    S3_CORS_ORIGINS=https://localhost:$(E2E_HTTPS_PORT) \
+    WEB_PORT=18091 S3_PUBLIC_PORT=19001 S3_FILER_PORT=18899 \
+    E2E_WEB_PORT=$(E2E_HTTPS_WEB_PORT) \
+    RATE_LIMIT_REQUESTS_PER_MINUTE=100 MAX_UPLOAD_BYTES=$(E2E_MAX_UPLOAD_BYTES) \
+    $(COMPOSE) -p 3dpaint-e2e-https -f infra/compose.e2e.yml -f infra/compose.https.yml --profile https
+E2E_HTTPS_DOWN := $(COMPOSE) -p 3dpaint-e2e-https -f infra/compose.e2e.yml -f infra/compose.https.yml --profile https down --volumes --remove-orphans
+
+.PHONY: up up-dev down logs build test e2e e2e-https up-https down-https
 
 up: ## Build (if needed) and start the full stack
 	$(COMPOSE) up -d --build
@@ -56,6 +87,12 @@ test: ## Build the monolith and run gateway tests (in a container; host SDK not 
 	docker run --rm -v "$(CURDIR):/work" -w /work/legacy/monolith $(DOTNET_SDK_8_IMG) dotnet build
 	docker run --rm -v "$(CURDIR):/work" -w /work/services/gateway/tests $(DOTNET_SDK_10_IMG) dotnet test
 
+up-https: ## Start the stack with the Caddy TLS edge (https profile, ADR 0016)
+	$(COMPOSE_HTTPS) up -d --build
+
+down-https: ## Stop the HTTPS stack (the profile must be on: caddy otherwise is not in the config)
+	$(COMPOSE_HTTPS) down
+
 e2e: ## Run Playwright against a throwaway stack (own ports, raised rate limit)
 	-@$(E2E_DOWN) >/dev/null 2>&1
 	@echo "Starting the e2e stand (gateway http://localhost:$(E2E_PORT), S3 http://localhost:$(E2E_S3_PORT))..."
@@ -73,4 +110,44 @@ e2e: ## Run Playwright against a throwaway stack (own ports, raised rate limit)
 	@status=0; \
 	(cd frontend && E2E_BASE_URL=http://localhost:$(E2E_PORT) S3_FILER_PORT=$(E2E_S3_PORT) E2E_MONOLITH_URL=http://127.0.0.1:$(E2E_WEB_PORT) npx playwright test) || status=$$?; \
 	$(E2E_DOWN); \
+	exit $$status
+
+e2e-https: ## Run the full Playwright suite against the HTTPS stand (Caddy, internal CA)
+	-@$(E2E_HTTPS_DOWN) >/dev/null 2>&1
+	@echo "Starting the https e2e stand (site https://localhost:$(E2E_HTTPS_PORT), S3 https://localhost:$(E2E_S3_HTTPS_PORT))..."
+	@$(COMPOSE_E2E_HTTPS) up -d --build
+	@echo "Waiting for the https e2e stack to become ready..."
+	# SNI must be the cert hostname (localhost): in lan mode the internal cert
+	# covers only MAIN_HOST, so https://127.0.0.1 fails the TLS handshake.
+	@ready=0; \
+	for i in $$(seq 1 120); do \
+		if curl -fsSk https://localhost:$(E2E_HTTPS_PORT)/health/ready >/dev/null 2>&1; then ready=1; break; fi; \
+		sleep 2; \
+	done; \
+	if [ "$$ready" != "1" ]; then \
+		echo "error: https e2e stand did not become ready in time" >&2; \
+		$(E2E_HTTPS_DOWN); \
+		exit 1; \
+	fi
+	# The internal CA materializes after the first TLS handshake (the curl
+	# above); Chromium then trusts exactly these certs (SPKI list,
+	# playwright.config.ts). Caddy's internal PKI is a root -> intermediate
+	# -> leaf chain and it presents only [leaf, intermediate], so the SPKI
+	# list needs the intermediate (the root is never presented); Node-side
+	# requests (APIRequestContext) do not see Chromium's spki-list flag, so
+	# they get the root via NODE_EXTRA_CA_CERTS. Keep the whole block below
+	# on one continuation chain with NO shell comments inside: a "#" line
+	# swallows the newline and breaks the chain (variables ca/status are
+	# lost across separate shell invocations).
+	@ca=$$(mktemp -d); \
+	$(COMPOSE_E2E_HTTPS) cp caddy:/data/caddy/pki/authorities/local/root.crt $$ca/caddy-root.crt; \
+	$(COMPOSE_E2E_HTTPS) cp caddy:/data/caddy/pki/authorities/local/intermediate.crt $$ca/caddy-intermediate.crt; \
+	status=0; \
+	(cd frontend && E2E_BASE_URL=https://localhost:$(E2E_HTTPS_PORT) \
+		E2E_MONOLITH_URL=http://127.0.0.1:$(E2E_HTTPS_WEB_PORT) \
+		E2E_S3_HTTPS_URL=https://localhost:$(E2E_S3_HTTPS_PORT) \
+		E2E_CUSTOM_CA=$$ca/caddy-root.crt,$$ca/caddy-intermediate.crt \
+		NODE_EXTRA_CA_CERTS=$$ca/caddy-root.crt npx playwright test) || status=$$?; \
+	rm -rf $$ca; \
+	$(E2E_HTTPS_DOWN); \
 	exit $$status

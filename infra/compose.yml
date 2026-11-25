@@ -1,12 +1,17 @@
 # 3DPAINT dev stack.
 # Environment variables are read from infra/.env
 # (Docker Compose v5 reads .env from the compose file directory).
-# Public port: gateway only (${WEB_PORT:-8080}); the monolith is internal.
+# Public ports: gateway only (127.0.0.1:${WEB_PORT:-8080}) and S3 (127.0.0.1);
+# the monolith is internal. Network (LAN) access goes through the Caddy TLS
+# edge instead of publishing the gateway: infra/compose.https.yml + the
+# `https` profile (step H, ADR 0016, BIND_ADDR).
 services:
   gateway:
     build:
       context: ../services/gateway
     ports:
+      # Loopback only: LAN access is the `https` profile's job (Caddy,
+      # ADR 0016), not a published HTTP port.
       - "127.0.0.1:${WEB_PORT:-8080}:8080"
     environment:
       - ASPNETCORE_ENVIRONMENT=Production
@@ -147,6 +152,14 @@ services:
 networks:
   app-network:
     driver: bridge
+    # Pinned subnet (step H, ADR 0016): the https profile pins Caddy to the
+    # fixed address 172.28.0.10 on this network and sets the gateway's
+    # KNOWN_PROXIES to exactly that IP, so the rate-limit client key is
+    # taken from X-Forwarded-For only for connections from Caddy. The
+    # values must stay in sync with infra/compose.https.yml.
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
 
 volumes:
   pgdata:
