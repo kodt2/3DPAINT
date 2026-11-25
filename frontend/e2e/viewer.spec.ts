@@ -91,6 +91,45 @@ test('GPU resources are not leaked when the scene is remounted', async ({ page }
   expect(Number(second)).toBeLessThanOrEqual(Number(first));
 });
 
+test('library <-> viewer navigation is client-side (no full page reload)', async ({
+  page,
+}) => {
+  const login = uniqueLogin('e2e_nav');
+  await registerViaUi(page, login);
+  await expect(page).toHaveURL(/\/spa\/library/);
+  const model = await uploadGlbBuffer(page, 'nav-cube.glb', buildCubeGlb());
+
+  // The list was loaded before the (API) upload, so reload it once to pick up
+  // the new model. This is setup (a full load); the client-side assertions
+  // below happen afterwards.
+  await page.goto('/spa/library');
+  await expect(page.locator('.library-open-3d')).toHaveCount(1);
+
+  // A marker on window survives a client-side (pushState) route change but is
+  // wiped by a full document load — so it proves the navigation is SPA
+  // routing, not a page reload.
+  await page.evaluate(() => {
+    (window as unknown as Record<string, string>).__spa_nav_marker = 'alive';
+  });
+
+  // Library -> viewer via the in-app link (client-side navigation).
+  await page.locator('.library-open-3d').first().click();
+  await expect(page).toHaveURL(new RegExp(`/spa/models/${model.id}(\\?|$)`));
+  await waitForDrawn(page);
+  let marker = await page.evaluate(
+    () => (window as unknown as Record<string, string>).__spa_nav_marker,
+  );
+  expect(marker).toBe('alive');
+
+  // Viewer -> library via the in-app link (client-side navigation).
+  await page.getByRole('link', { name: '← В библиотеку' }).click();
+  await expect(page).toHaveURL(/\/spa\/library/);
+  marker = await page.evaluate(
+    () => (window as unknown as Record<string, string>).__spa_nav_marker,
+  );
+  expect(marker).toBe('alive');
+});
+
 test('a corrupt file shows the friendly parse error', async ({ page }) => {
   const login = uniqueLogin('e2e_badglb');
   await registerViaUi(page, login);

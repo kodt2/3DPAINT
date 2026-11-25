@@ -94,3 +94,21 @@ test('a Draco cube opens in the viewer over https; decoders and S3 stay on https
   );
   expect(bad, `console errors: ${bad.join(' | ')}`).toEqual([]);
 });
+
+test('the root redirect preserves the https origin and non-standard port', async ({
+  page,
+}) => {
+  // A fresh context (no session): the gateway 302-redirects / to /spa/ (a
+  // RELATIVE Location) and the SPA root routes the guest to /spa/login.
+  await page.goto('/');
+  await expect(page).toHaveURL(/\/spa\//);
+
+  // The browser followed the relative redirect and stayed on the very origin
+  // of the stand: https scheme, host "localhost" and the non-standard port.
+  // A Location built from the Gateway's internal host/port (or downgraded to
+  // http) would break this (ADR 0016, 3d.1).
+  const final = new URL(page.url());
+  expect(final.origin).toBe(new URL(baseUrl).origin);
+  expect(final.protocol).toBe('https:');
+  expect(final.port).toBe(new URL(baseUrl).port);
+});
