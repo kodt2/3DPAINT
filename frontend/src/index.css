@@ -20,34 +20,6 @@ body {
   padding: 2rem 1rem;
 }
 
-.api-check button {
-  padding: 0.5rem 1rem;
-  font-size: 1rem;
-  cursor: pointer;
-}
-
-.api-check button:disabled {
-  cursor: wait;
-  opacity: 0.6;
-}
-
-.api-check-result {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 0.25rem 1rem;
-  margin-top: 1rem;
-}
-
-.api-check-result dt {
-  font-family: monospace;
-}
-
-.api-check-result dd {
-  margin: 0;
-  font-family: monospace;
-  overflow-wrap: anywhere;
-}
-
 /* Auth screens (step 3c.1) */
 .auth-card {
   max-width: 24rem;

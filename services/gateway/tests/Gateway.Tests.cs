@@ -21,7 +21,9 @@ public sealed class GatewayTests : IDisposable
         using var factory = CreateFactory(_upstream.Url, _upstream.Url);
         var client = factory.CreateClient();
 
-        var request = new HttpRequestMessage(HttpMethod.Get, "/");
+        // A non-root monolith path: the root "/" is now a 302 redirect to /spa/
+        // (3d.1), so proxy behaviour is exercised on a catch-all path instead.
+        var request = new HttpRequestMessage(HttpMethod.Get, "/legacy");
         request.Headers.Host = "shop.example.com";
         using var response = await client.SendAsync(request);
 
@@ -42,7 +44,8 @@ public sealed class GatewayTests : IDisposable
         using var factory = CreateFactory(_upstream.Url, _upstream.Url);
         var client = factory.CreateClient();
 
-        var request = new HttpRequestMessage(HttpMethod.Get, "/");
+        // Non-root monolith path (the root is a 302 to /spa/, see 3d.1).
+        var request = new HttpRequestMessage(HttpMethod.Get, "/legacy");
         request.Headers.Host = "shop.example.com";
         using var response = await client.SendAsync(request);
 
@@ -62,7 +65,8 @@ public sealed class GatewayTests : IDisposable
         using var factory = CreateFactory(_upstream.Url, _upstream.Url);
         var client = factory.CreateClient();
 
-        var request = new HttpRequestMessage(HttpMethod.Get, "/");
+        // Non-root monolith path (the root is a 302 to /spa/, see 3d.1).
+        var request = new HttpRequestMessage(HttpMethod.Get, "/legacy");
         request.Headers.Add(CorrelationIdMiddleware.HeaderName, "abc-123");
         using var response = await client.SendAsync(request);
 
@@ -164,16 +168,88 @@ public sealed class GatewayTests : IDisposable
         using var factory = CreateFactory(_upstream.Url, frontend.Url);
         var client = factory.CreateClient();
 
-        using var root = await client.GetAsync("/");
+        using var root = await client.GetAsync("/legacy");
         Assert.Equal(HttpStatusCode.OK, root.StatusCode);
         Assert.Equal("monolith-ok", await root.Content.ReadAsStringAsync());
-        Assert.Equal("/", _upstream.LastRequestPath);
+        Assert.Equal("/legacy", _upstream.LastRequestPath);
 
         using var account = await client.GetAsync("/Account/Login");
         Assert.Equal(HttpStatusCode.OK, account.StatusCode);
         Assert.Equal("monolith-ok", await account.Content.ReadAsStringAsync());
         Assert.Equal("/Account/Login", _upstream.LastRequestPath);
         Assert.Null(frontend.LastRequestPath);
+    }
+
+    [Fact]
+    public async Task Root_get_redirects_to_spa_with_relative_location()
+    {
+        using var factory = CreateFactory(_upstream.Url, _upstream.Url);
+        using var client = CreateNoRedirectClient(factory);
+
+        using var response = await client.GetAsync("/");
+
+        Assert.Equal(HttpStatusCode.Found, response.StatusCode);
+        // Relative Location (no scheme/host): the browser and any upstream TLS
+        // proxy (Caddy) resolve it against the request origin, so a
+        // non-standard HTTPS port is preserved without the gateway knowing the
+        // public address (ADR 0016, 3d.1).
+        Assert.Equal(RootRedirectMiddleware.SpaRootPath, response.Headers.Location?.ToString());
+        // The redirect is served by the gateway, not proxied to the monolith.
+        Assert.Null(_upstream.LastRequestPath);
+    }
+
+    [Fact]
+    public async Task Root_head_redirects_to_spa_with_relative_location()
+    {
+        using var factory = CreateFactory(_upstream.Url, _upstream.Url);
+        using var client = CreateNoRedirectClient(factory);
+
+        var request = new HttpRequestMessage(HttpMethod.Head, "/");
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Found, response.StatusCode);
+        Assert.Equal(RootRedirectMiddleware.SpaRootPath, response.Headers.Location?.ToString());
+        Assert.Null(_upstream.LastRequestPath);
+    }
+
+    /// <summary>
+    /// A client that does not follow redirects, so a 302 is observable. The
+    /// default factory client auto-follows the /spa/ redirect and would surface
+    /// the final 200 instead of the 302 we assert on.
+    /// </summary>
+    private static HttpClient CreateNoRedirectClient(WebApplicationFactory<Program> factory)
+        => new(factory.Server.CreateHandler()) { BaseAddress = new Uri("http://localhost") };
+
+    [Fact]
+    public async Task Root_post_is_not_redirected_and_reaches_monolith()
+    {
+        using var factory = CreateFactory(_upstream.Url, _upstream.Url);
+        var client = factory.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/");
+        request.Content = new StringContent("", System.Text.Encoding.UTF8, "application/json");
+        using var response = await client.SendAsync(request);
+
+        // The root is a page, not an API: only safe methods (GET/HEAD) redirect.
+        // A POST falls through to the monolith catch-all.
+        Assert.NotEqual(HttpStatusCode.Found, response.StatusCode);
+        Assert.Equal("/", _upstream.LastRequestPath);
+    }
+
+    [Fact]
+    public async Task Spa_root_is_proxied_to_frontend_and_not_redirected()
+    {
+        using var frontend = new StubUpstream("frontend");
+        using var factory = CreateFactory(_upstream.Url, frontend.Url);
+        var client = factory.CreateClient();
+
+        using var response = await client.GetAsync("/spa/");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("frontend-ok", await response.Content.ReadAsStringAsync());
+        // The /spa prefix is stripped: the frontend sees the root path.
+        Assert.Equal("/", frontend.LastRequestPath);
+        Assert.Null(_upstream.LastRequestPath);
     }
 
     private static WebApplicationFactory<Program> CreateFactory(string upstreamAddress, string frontendAddress)
