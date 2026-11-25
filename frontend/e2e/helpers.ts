@@ -1,4 +1,4 @@
-import type { Page } from '@playwright/test';
+import { expect, type Page } from '@playwright/test';
 import { E2E_BASE_URL } from '../playwright.config';
 
 /**
@@ -94,4 +94,89 @@ function minimalGlb(): Buffer {
     buf.fill(0x20, 20 + json.length, 20 + jsonPadded); // space padding
   }
   return buf;
+}
+
+/** Shared viewer/wait helpers (compressed-glb.spec.ts, https-viewer.spec.ts). */
+
+export const DRAWN_TIMEOUT = 30_000;
+
+/** Uploads an arbitrary GLB payload under the given file name. */
+export async function uploadGlbBuffer(
+  page: Page,
+  fileName: string,
+  glb: ArrayBuffer,
+): Promise<{ id: string }> {
+  const response = await page.request.post(`${baseUrl}/api/files/upload`, {
+    headers: await apiHeaders(page),
+    multipart: {
+      file: {
+        name: fileName,
+        mimeType: 'model/gltf-binary',
+        buffer: Buffer.from(glb),
+      },
+    },
+  });
+  if (response.status() !== 200) {
+    throw new Error(`upload failed: ${response.status()} ${await response.text()}`);
+  }
+  const body = (await response.json()) as { id: string };
+  return { id: body.id };
+}
+
+export async function openViewer(page: Page, id: string) {
+  await page.goto(`/spa/models/${id}`);
+}
+
+/**
+ * Waits until the viewer signals a frame was drawn (data-viewer-drawn on
+ * the canvas wrapper). A raw "the canvas exists" check is not enough: the
+ * canvas is mounted before the (possibly compressed) GLB decodes.
+ */
+export async function waitForDrawn(page: Page) {
+  await expect
+    .poll(async () => page.locator('.viewer-canvas-wrap').getAttribute('data-viewer-drawn'), {
+      timeout: DRAWN_TIMEOUT,
+    })
+    .toBe('true');
+}
+
+/** One row of the "Информация о модели" side panel (label + value). */
+export function infoRow(page: Page, label: string) {
+  const panel = page.getByRole('complementary', { name: 'Информация о модели' });
+  return panel.locator('.viewer-info-list > div').filter({ hasText: label });
+}
+
+/**
+ * Collects every network request the page makes (blob:/data: worker URLs are
+ * excluded — they are in-memory, not network).
+ */
+export function trackRequests(page: Page): string[] {
+  const urls: string[] = [];
+  page.on('request', (request) => {
+    const url = request.url();
+    if (!url.startsWith('blob:') && !url.startsWith('data:')) {
+      urls.push(url);
+    }
+  });
+  return urls;
+}
+
+/**
+ * ADR 0014: the viewer must not fetch decoders (or anything else) from a
+ * third-party host. In the e2e stand every legitimate target is local:
+ * the Gateway origin (SPA, decoder assets) and the S3 endpoint (the
+ * presigned model download).
+ */
+export function expectOnlyLocalRequests(urls: string[]) {
+  const external = urls.filter((url) => {
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return false;
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+    return parsed.hostname !== 'localhost' && parsed.hostname !== '127.0.0.1';
+  });
+  expect(external, `external requests: ${external.join(', ')}`).toEqual([]);
 }

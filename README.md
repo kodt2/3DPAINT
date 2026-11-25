@@ -226,3 +226,72 @@ Swagger UI и включён dev-профиль OpenAPI):
 * Проверка после деплоя: `curl -H 'Origin: https://<домен>' -X POST
   https://<домен>/api/auth/login ...` → не `403`; `https://<домен>/swagger` →
   `404`.
+
+## Доступ по сети: HTTPS-контур Caddy (шаг H, ADR 0016)
+
+Для LAN и production у стэка есть TLS-контур **Caddy**
+(образ `caddy:2.11.9-alpine`, тег закреплён). Наружу публикуются **только
+порты Caddy** на адресе `BIND_ADDR` (дефолт `127.0.0.1`); Gateway и S3
+остаются loopback-only и из сети не видны.
+
+```bash
+make up-https    # стэк + Caddy (профиль https), по умолчанию для localhost
+make down-https  # остановить (профиль обязателен, иначе Caddy не в конфиге)
+```
+
+Порты хоста (контейнерные фиксированы: 80/443/9443): `HTTP_PORT` (80 —
+ACME/редирект, prod), `HTTPS_PORT` (443 — сайт), `S3_HTTPS_PORT` (9443 — S3
+в lan-режиме; в prod S3 тоже на 443, роутинг по SNI).
+
+Для LAN-доступа клиентов:
+
+```bash
+BIND_ADDR=0.0.0.0 MAIN_HOST=<имя-машины> PUBLIC_ORIGIN=https://<имя-машины>:8443 \
+  HTTPS_PORT=8443 make up-https
+```
+
+Внутренний сертификат покрывает только хост `MAIN_HOST` (SNI): `PUBLIC_ORIGIN`
+и `S3_CORS_ORIGINS` задавайте под тот же хост (порты в URL допустимы).
+
+### Режимы TLS (`TLS_MODE`)
+
+| Режим | Сертификат | HSTS | Когда |
+|---|---|---|---|
+| `lan` (дефолт) | внутренний CA Caddy (`tls internal`) | **выключен** | локальная сеть: клиенты один раз ставят корневой сертификат |
+| `prod` | Let's Encrypt (обязателен `ACME_EMAIL`) | **включён** | production: публичный домен, Caddy достижим на `:80`/`:443` |
+
+### Установка корневого сертификата (LAN)
+
+Корневой сертификат — в контейнере
+`caddy:/data/caddy/pki/authorities/local/root.crt`; он стабилен между
+пересозданиями контейнера (том `caddydata`). Копия:
+
+```bash
+docker compose -f infra/compose.yml -f infra/compose.override.yml \
+  -f infra/compose.https.yml --profile https \
+  cp caddy:/data/caddy/pki/authorities/local/root.crt 3dpaint-caddy-root.crt
+```
+
+- **Linux (Debian/Ubuntu):** `sudo cp 3dpaint-caddy-root.crt /usr/local/share/ca-certificates/ && sudo update-ca-certificates` (имя файла обязательно оканчивается `.crt` — так браузеры и принимают корень);
+- **macOS:** открыть `.crt`, перетащить сертификат в «Ключи» и поставить доверие «Всегда доверять»;
+- **Windows:** импорт в «Достоверные корневые центра сертификации» (`certlm.msc`);
+- **Android:** Настройки → Безопасность → Установить сертификаты → «CA»; на **iOS** — профиль конфигурации (Настройки → Ограничения → Профиль).
+
+### Production
+
+`TLS_MODE=prod` + `ACME_EMAIL`, `PUBLIC_ORIGIN=https://домен`,
+`PUBLIC_S3_ENDPOINT=https://s3.домен` (Let's Encrypt не выдаёт сертификаты
+на IP), `BIND_ADDR` — адрес, видимый из интернета, порты 80/443 открыты.
+Остальное — раздел «Деплой на сервер (production-паттерн)»:
+`ASPNETCORE_ENVIRONMENT=Production`, `S3_CORS_ORIGINS`, секреты.
+`KNOWN_PROXIES` в `make up-https` уже задан compose (фиксированный IP Caddy
+`172.28.0.10`) — XFF доверяется только от него (ADR 0016 §3).
+
+### E2E по HTTPS
+
+`make e2e-https` — одноразовый стенд: полный Playwright-прогон **через Caddy**
+(внутренний CA; Chromium доверяет CA через SPKI-список, Node — через
+`NODE_EXTRA_CA_CERTS`; в системный trust-store хоста ничего не ставится).
+Проверяет, в частности: Draco-модель открывается по HTTPS, декодеры идут с
+origin сайта, presigned S3 — только `https://`, mixed-content/CORS-ошибок нет,
+HSTS в lan-режиме отсутствует. Plain `make e2e` (HTTP) не меняется.

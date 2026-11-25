@@ -1,0 +1,78 @@
+# HTTPS/LAN access (step H, ADR 0016).
+#
+# Activated with the `https` profile + this file, e.g.
+#   make up-https
+# or
+#   docker compose -f infra/compose.yml -f infra/compose.override.yml \
+#     -f infra/compose.https.yml --profile https up -d
+#
+# What it adds:
+#   * caddy — TLS edge in front of the gateway (site) and S3 (presigned
+#     downloads). ONLY Caddy's ports are published, on ${BIND_ADDR}
+#     (default 127.0.0.1). The gateway and S3 keep their 127.0.0.1-only
+#     ports; nothing else is reachable from the network.
+#   * gateway.KNOWN_PROXIES — the pinned Caddy IP (172.28.0.10, see the
+#     caddy network config below; the app-network subnet is pinned in
+#     infra/compose.yml, ipam): the rate-limit client key is taken from
+#     X-Forwarded-For only for connections coming from that exact address
+#     (i.e. from Caddy). An exact IP — not the whole subnet — on purpose:
+#     host connections through the published ports arrive at the gateway
+#     from the bridge address (172.28.0.1) and must NOT be able to forge
+#     the client key via X-Forwarded-For. The gateway's own port is not
+#     published, so a network client cannot bypass Caddy at all.
+#
+# TLS modes (TLS_MODE):
+#   lan  (default) — Caddy's internal CA (`tls internal`), no HSTS.
+#                    Clients install the root cert once (README).
+#   prod           — Let's Encrypt (ACME_EMAIL required), HSTS enabled.
+#                    Needs a public domain in PUBLIC_ORIGIN /
+#                    PUBLIC_S3_ENDPOINT and Caddy reachable on :80/:443.
+
+services:
+  caddy:
+    image: caddy:2.11.9-alpine
+    profiles: ["https"]
+    restart: unless-stopped
+    # Generates /config/Caddyfile from the environment, then execs caddy.
+    # The file is deterministic (env-derived); inspect it with
+    # `docker compose ... exec caddy cat /config/Caddyfile`.
+    entrypoint: ["sh", "/etc/caddy/entrypoint.sh"]
+    volumes:
+      - ./caddy/entrypoint.sh:/etc/caddy/entrypoint.sh:ro
+      # Named volume: the internal CA (and its issued certs) survive
+      # container recreations — clients keep their installed root cert.
+      - caddydata:/data
+    environment:
+      # Host part (no scheme, no port) of PUBLIC_ORIGIN / PUBLIC_S3_ENDPOINT:
+      # the Caddyfile site addresses and the cert hostnames.
+      - MAIN_HOST=${MAIN_HOST:-localhost}
+      - S3_HOST=${S3_HOST:-localhost}
+      - TLS_MODE=${TLS_MODE:-lan}
+      - ACME_EMAIL=${ACME_EMAIL:-}
+    # Container ports are fixed (80/443/9443); the host side is configurable.
+    # 9443 is the S3 https listener (Caddy -> storage:9000, Host and path
+    # preserved — presigned SigV4 signatures must keep validating).
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${HTTP_PORT:-80}:80"
+      - "${BIND_ADDR:-127.0.0.1}:${HTTPS_PORT:-443}:443"
+      - "${BIND_ADDR:-127.0.0.1}:${S3_HTTPS_PORT:-9443}:9443"
+    depends_on:
+      - gateway
+      - storage
+    networks:
+      app-network:
+        # Fixed address: the gateway trusts exactly this IP for
+        # X-Forwarded-For (see KNOWN_PROXIES below). Do not change it
+        # without updating the gateway environment.
+        ipv4_address: 172.28.0.10
+
+  gateway:
+    environment:
+      # The single trusted proxy for X-Forwarded-For (rate-limit client key,
+      # ADR 0011 §6.2): Caddy's fixed address on the app-network. Exact IP,
+      # not a subnet — host traffic arrives at the gateway from the bridge
+      # address (172.28.0.1) and its XFF headers must be ignored.
+      KNOWN_PROXIES: 172.28.0.10
+
+volumes:
+  caddydata:
