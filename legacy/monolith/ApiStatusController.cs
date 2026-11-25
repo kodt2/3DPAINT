@@ -7,8 +7,8 @@ using Microsoft.EntityFrameworkCore;
 namespace LoginAndReg.Controllers;
 
 /// <summary>
-/// Minimal JSON endpoints for the future SPA (step 3a). The Razor UI keeps using
-/// /Account/* for now; these /api endpoints are the contract the SPA will consume.
+/// Minimal JSON endpoints for the SPA (step 3a). These /api endpoints are
+/// the contract the SPA consumes (the Razor UI was removed in step 3d.2).
 /// </summary>
 [ApiController]
 [Authorize]

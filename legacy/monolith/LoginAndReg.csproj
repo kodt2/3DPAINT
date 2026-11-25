@@ -7,18 +7,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Remove="Pages\**" />
-    <Content Remove="Pages\**" />
-    <EmbeddedResource Remove="Pages\**" />
-    <None Remove="Pages\**" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <None Include="wwwroot\js\auth-visuals.js" />
-    <None Include="wwwroot\js\auth-logic.js" />
-  </ItemGroup>
-
-  <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.4" />
     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="8.0.4" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.4">
@@ -42,7 +30,6 @@
 </ItemGroup>
 <ItemGroup>
   <Folder Include="Migrations\" />
-  <Folder Include="wwwroot\Новая папка\" />
 </ItemGroup>
 
 </Project>

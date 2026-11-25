@@ -9,12 +9,12 @@ namespace LoginAndReg.Controllers
 {
     /// <summary>
     /// JSON auth endpoints for the SPA (step 3c.1). The legacy Razor flow
-    /// (/Account/Login, /Account/Register) keeps working unchanged; this
-    /// controller only adds the /api/auth/* contract the SPA consumes.
+    /// (/Account/Login, /Account/Register) was removed in step 3d.2; this
+    /// controller is the /api/auth/* contract the SPA consumes.
     ///
-    /// Auth model (ADR 0011): the same "jwt" cookie as the Razor flow
-    /// (SameSite=Lax, HttpOnly, Secure). Login and register log the user in
-    /// immediately (the SPA has no separate session bootstrap).
+    /// Auth model (ADR 0011): a "jwt" cookie (SameSite=Lax, HttpOnly, Secure).
+    /// Login and register log the user in immediately (the SPA has no
+    /// separate session bootstrap).
     /// All endpoints are [AllowAnonymous] at the class level: login/register
     /// are public by design, and logout is an idempotent no-op when anonymous.
     /// </summary>

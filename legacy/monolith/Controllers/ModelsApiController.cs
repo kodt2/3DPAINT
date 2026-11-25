@@ -12,8 +12,7 @@ namespace LoginAndReg.Controllers
     /// JSON model-library endpoints for the SPA (step 3c.2). The route
     /// matches the target contract (ARCHITECTURE.md §7.2): in Phase 5 the
     /// Models Service takes over /api/models and the SPA stays unchanged
-    /// (ADR 0013). The legacy /api/files endpoints of the Razor UI are
-    /// untouched.
+    /// (ADR 0013).
     ///
     /// Ownership (IDOR): the user filter is part of the same SQL WHERE
     /// clause as the id filter (WHERE id = @id AND user_id = @userId) — a

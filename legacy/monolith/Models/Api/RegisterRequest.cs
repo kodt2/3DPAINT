@@ -3,8 +3,7 @@ using System.ComponentModel.DataAnnotations;
 namespace LoginAndReg.Models.Api
 {
     /// <summary>
-    /// Body for POST /api/auth/register. Validation rules mirror the legacy
-    /// RegistrationViewModel (Razor form) so both entry points agree.
+    /// Body for POST /api/auth/register.
     /// </summary>
     public sealed record RegisterRequest
     {
