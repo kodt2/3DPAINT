@@ -794,6 +794,72 @@ public sealed class ClientKeyResolverTests
             TrustedProxyClientKeyResolver.FromConfiguration(config));
         Assert.Contains("KNOWN_NETWORKS", ex.Message);
     }
+
+    /// <summary>
+    /// Builds the IPv4-mapped IPv6 form (::ffff:a.b.c.d) that Kestrel on
+    /// Linux reports as the socket peer for IPv4 connections.
+    /// </summary>
+    private static IPAddress V4Mapped(string ip)
+    {
+        var v4 = IPAddress.Parse(ip).GetAddressBytes();
+        var mapped = new byte[16];
+        mapped[10] = 0xff;
+        mapped[11] = 0xff;
+        Array.Copy(v4, 0, mapped, 12, 4);
+        return new IPAddress(mapped);
+    }
+
+    [Fact]
+    public void V4_mapped_remote_matching_known_proxy_is_trusted()
+    {
+        // Regression: Kestrel on Linux reports the peer as ::ffff:172.28.0.10,
+        // while KNOWN_PROXIES holds the plain IPv4 172.28.0.10. Without the
+        // canonicalization the proxy was silently untrusted and XFF ignored.
+        var resolver = Resolver((IPAddress.Parse("172.28.0.10"), null));
+        var context = new DefaultHttpContext();
+        context.Connection.RemoteIpAddress = V4Mapped("172.28.0.10");
+        context.Request.Headers["X-Forwarded-For"] = "192.168.1.50";
+
+        Assert.Equal("192.168.1.50", resolver.Resolve(context));
+    }
+
+    [Fact]
+    public void V4_mapped_untrusted_remote_ignores_xff_and_key_is_canonicalized()
+    {
+        // The host bridge address is not trusted: the forged XFF must be
+        // ignored, and the key must be the plain IPv4 form (not ::ffff:172.28.0.1)
+        // so it matches the key of the same client seen as plain IPv4.
+        var resolver = Resolver((IPAddress.Parse("172.28.0.10"), null));
+        var context = new DefaultHttpContext();
+        context.Connection.RemoteIpAddress = V4Mapped("172.28.0.1");
+        context.Request.Headers["X-Forwarded-For"] = "9.9.9.9";
+
+        Assert.Equal("172.28.0.1", resolver.Resolve(context));
+    }
+
+    [Fact]
+    public void V4_mapped_remote_in_known_network_is_trusted()
+    {
+        var resolver = Resolver((IPAddress.Any, IPNetwork.Parse("172.28.0.0/16")));
+        var context = new DefaultHttpContext();
+        context.Connection.RemoteIpAddress = V4Mapped("172.28.0.7");
+        context.Request.Headers["X-Forwarded-For"] = "192.168.1.50, 172.28.0.10";
+
+        Assert.Equal("192.168.1.50", resolver.Resolve(context));
+    }
+
+    [Fact]
+    public void V4_mapped_xff_entries_are_canonicalized_before_trust_check()
+    {
+        // A trusted proxy chain that carries the client in mapped form must
+        // still be recognized as a proxy and skipped.
+        var resolver = Resolver((IPAddress.Parse("172.28.0.10"), null));
+        var context = new DefaultHttpContext();
+        context.Connection.RemoteIpAddress = V4Mapped("172.28.0.10");
+        context.Request.Headers["X-Forwarded-For"] = "192.168.1.50, ::ffff:172.28.0.10";
+
+        Assert.Equal("192.168.1.50", resolver.Resolve(context));
+    }
 }
 
 public sealed class SlidingWindowCounterTests
@@ -851,6 +917,22 @@ public sealed class SlidingWindowCounterTests
     public void Non_positive_window_is_rejected()
     {
         Assert.Throws<ArgumentException>(() => new SlidingWindowCounter(TimeSpan.Zero));
+    }
+
+    [Fact]
+    public async Task Default_clock_advances_in_ticks_units_so_windows_expire()
+    {
+        // Regression: the default clock used to feed millisecond values
+        // (Environment.TickCount64) into tick-based arithmetic, so a window
+        // never expired within any realistic test or production timeframe.
+        var counter = new SlidingWindowCounter(TimeSpan.FromMilliseconds(150));
+
+        Assert.True(counter.TryAcquire("a", 1, out _));
+        Assert.False(counter.TryAcquire("a", 1, out _));
+
+        await Task.Delay(250);
+
+        Assert.True(counter.TryAcquire("a", 1, out _));
     }
 }
 

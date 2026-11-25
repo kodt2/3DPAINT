@@ -29,7 +29,7 @@ public sealed class TrustedProxyClientKeyResolver : IClientKeyResolver
 
     public TrustedProxyClientKeyResolver(IReadOnlyCollection<IPAddress> knownProxies, IReadOnlyCollection<IPNetwork> knownNetworks)
     {
-        _knownProxies = knownProxies.ToList();
+        _knownProxies = knownProxies.Select(ToCanonical).Distinct().ToList();
         _knownNetworks = knownNetworks.ToList();
     }
 
@@ -81,17 +81,18 @@ public sealed class TrustedProxyClientKeyResolver : IClientKeyResolver
             return "unknown";
         }
 
-        if (!IsKnownProxy(remote))
+        var canonical = ToCanonical(remote);
+        if (!IsKnownProxy(canonical))
         {
             // The connection is not from a trusted proxy: XFF is forgeable and ignored.
-            return remote.ToString();
+            return canonical.ToString();
         }
 
         var forwarded = context.Request.Headers["X-Forwarded-For"].ToString();
         if (string.IsNullOrWhiteSpace(forwarded))
         {
             // Trusted proxy did not add XFF: the peer (the proxy) is the best key we have.
-            return remote.ToString();
+            return canonical.ToString();
         }
 
         var entries = forwarded.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
@@ -99,19 +100,28 @@ public sealed class TrustedProxyClientKeyResolver : IClientKeyResolver
         // Rightmost first: skip proxies we trust, the first untrusted entry is the client.
         for (var i = entries.Length - 1; i >= 0; i--)
         {
-            if (IPAddress.TryParse(entries[i], out var ip) && !IsKnownProxy(ip))
+            if (IPAddress.TryParse(entries[i], out var ip) && !IsKnownProxy(ToCanonical(ip)))
             {
-                return ip.ToString();
+                return ToCanonical(ip).ToString();
             }
         }
 
         // Every entry is a trusted proxy (or unparseable): fall back to the leftmost
         // entry if it is an address, otherwise to the peer.
         return entries.Length > 0 && IPAddress.TryParse(entries[0], out var leftmost)
-            ? leftmost.ToString()
-            : remote.ToString();
+            ? ToCanonical(leftmost).ToString()
+            : canonical.ToString();
     }
 
     private bool IsKnownProxy(IPAddress address)
         => _knownProxies.Contains(address) || _knownNetworks.Any(network => network.Contains(address));
+
+    /// <summary>
+    /// Kestrel on Linux reports IPv4 peers as IPv4-mapped IPv6 addresses
+    /// (::ffff:a.b.c.d). The canonical form is plain IPv4, so that
+    /// <see cref="IPAddress"/> equality matches the configured values and the
+    /// rate-limit keys of the same client are identical regardless of the form.
+    /// </summary>
+    private static IPAddress ToCanonical(IPAddress address)
+        => address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address;
 }

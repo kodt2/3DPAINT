@@ -34,7 +34,12 @@ public sealed class SlidingWindowCounter
         }
 
         Window = window;
-        _nowTicks = nowTicks ?? (() => Environment.TickCount64);
+        // Environment.TickCount64 is in MILLISECONDS despite the name; the
+        // counter arithmetic (cutoff = now - Window.Ticks) is in TimeSpan
+        // ticks (100 ns), so scale the real clock up. Mixing the units made
+        // the "60 s window" last ~7 days (or latch forever on hosts with
+        // under ~7 days of uptime, when the cutoff goes negative).
+        _nowTicks = nowTicks ?? (() => Environment.TickCount64 * TimeSpan.TicksPerMillisecond);
     }
 
     public TimeSpan Window { get; }
