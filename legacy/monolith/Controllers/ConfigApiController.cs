@@ -20,8 +20,8 @@ namespace LoginAndReg.Controllers
     {
         /// <summary>
         /// Extensions the SPA upload accepts. This is an SPA-level decision
-        /// (the viewer is GLB-only), not the monolith whitelist, which keeps
-        /// .stl/.obj/.step/.stp for the legacy Razor UI.
+        /// (the viewer is GLB-only); it is narrower than the monolith upload
+        /// whitelist (FileStorageService).
         /// </summary>
         private static readonly string[] SpaUploadExtensions = [".glb"];
 

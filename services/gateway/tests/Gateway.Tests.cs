@@ -21,9 +21,10 @@ public sealed class GatewayTests : IDisposable
         using var factory = CreateFactory(_upstream.Url, _upstream.Url);
         var client = factory.CreateClient();
 
-        // A non-root monolith path: the root "/" is now a 302 redirect to /spa/
-        // (3d.1), so proxy behaviour is exercised on a catch-all path instead.
-        var request = new HttpRequestMessage(HttpMethod.Get, "/legacy");
+        // A monolith path: only /api/** is proxied to the monolith (3d.2
+        // removed the catch-all), so proxy behaviour is exercised on an /api
+        // path.
+        var request = new HttpRequestMessage(HttpMethod.Get, "/api/correlation-check");
         request.Headers.Host = "shop.example.com";
         using var response = await client.SendAsync(request);
 
@@ -44,8 +45,8 @@ public sealed class GatewayTests : IDisposable
         using var factory = CreateFactory(_upstream.Url, _upstream.Url);
         var client = factory.CreateClient();
 
-        // Non-root monolith path (the root is a 302 to /spa/, see 3d.1).
-        var request = new HttpRequestMessage(HttpMethod.Get, "/legacy");
+        // Monolith path (only /api/** is proxied to the monolith, 3d.2).
+        var request = new HttpRequestMessage(HttpMethod.Get, "/api/forwarded-check");
         request.Headers.Host = "shop.example.com";
         using var response = await client.SendAsync(request);
 
@@ -65,8 +66,8 @@ public sealed class GatewayTests : IDisposable
         using var factory = CreateFactory(_upstream.Url, _upstream.Url);
         var client = factory.CreateClient();
 
-        // Non-root monolith path (the root is a 302 to /spa/, see 3d.1).
-        var request = new HttpRequestMessage(HttpMethod.Get, "/legacy");
+        // Monolith path (only /api/** is proxied to the monolith, 3d.2).
+        var request = new HttpRequestMessage(HttpMethod.Get, "/api/correlation-check");
         request.Headers.Add(CorrelationIdMiddleware.HeaderName, "abc-123");
         using var response = await client.SendAsync(request);
 
@@ -162,22 +163,61 @@ public sealed class GatewayTests : IDisposable
     }
 
     [Fact]
-    public async Task Route_priority_catch_all_goes_to_monolith()
+    public async Task Unknown_paths_return_404_and_reach_no_upstream()
     {
         using var frontend = new StubUpstream("frontend");
         using var factory = CreateFactory(_upstream.Url, frontend.Url);
         var client = factory.CreateClient();
 
-        using var root = await client.GetAsync("/legacy");
-        Assert.Equal(HttpStatusCode.OK, root.StatusCode);
-        Assert.Equal("monolith-ok", await root.Content.ReadAsStringAsync());
-        Assert.Equal("/legacy", _upstream.LastRequestPath);
-
-        using var account = await client.GetAsync("/Account/Login");
-        Assert.Equal(HttpStatusCode.OK, account.StatusCode);
-        Assert.Equal("monolith-ok", await account.Content.ReadAsStringAsync());
-        Assert.Equal("/Account/Login", _upstream.LastRequestPath);
+        // 3d.2 removed the monolith catch-all: a path that is not /api/**,
+        // /spa/** or /assets/** is a 404 from the gateway and never reaches
+        // either upstream.
+        using var response = await client.GetAsync("/legacy");
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Null(_upstream.LastRequestPath);
         Assert.Null(frontend.LastRequestPath);
+    }
+
+    [Fact]
+    public async Task Legacy_razor_routes_redirect_to_spa_with_relative_location()
+    {
+        using var factory = CreateFactory(_upstream.Url, _upstream.Url);
+        using var client = CreateNoRedirectClient(factory);
+
+        // The Razor UI was removed from the monolith (3d.2): its page routes
+        // /Home/** and /Account/** are 302-redirected to the SPA root with a
+        // relative Location (no absolute URL, ADR 0016). Lookalikes such as
+        // "/Homepage" are not matched.
+        foreach (var path in new[] { "/Home/Index", "/Home", "/Account/Login", "/Account/Register", "/Account" })
+        {
+            using var response = await client.GetAsync(path);
+            Assert.Equal(HttpStatusCode.Found, response.StatusCode);
+            Assert.Equal(LegacyRazorRedirectMiddleware.SpaRootPath, response.Headers.Location?.ToString());
+        }
+
+        // A lookalike that is not a legacy page route is not redirected: it is
+        // an unknown path and a 404.
+        using var lookalike = await client.GetAsync("/Homepage");
+        Assert.Equal(HttpStatusCode.NotFound, lookalike.StatusCode);
+
+        // Served by the gateway, not proxied to the monolith.
+        Assert.Null(_upstream.LastRequestPath);
+    }
+
+    [Fact]
+    public async Task Legacy_razor_post_is_not_redirected_and_returns_404()
+    {
+        using var factory = CreateFactory(_upstream.Url, _upstream.Url);
+        var client = factory.CreateClient();
+
+        // Only safe methods (GET/HEAD) redirect; a POST to a removed Razor
+        // route is not proxied (no catch-all) and is a 404.
+        var request = new HttpRequestMessage(HttpMethod.Post, "/Account/Login");
+        request.Content = new StringContent("", System.Text.Encoding.UTF8, "application/x-www-form-urlencoded");
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Null(_upstream.LastRequestPath);
     }
 
     [Fact]
@@ -221,7 +261,7 @@ public sealed class GatewayTests : IDisposable
         => new(factory.Server.CreateHandler()) { BaseAddress = new Uri("http://localhost") };
 
     [Fact]
-    public async Task Root_post_is_not_redirected_and_reaches_monolith()
+    public async Task Root_post_is_not_redirected_and_returns_404()
     {
         using var factory = CreateFactory(_upstream.Url, _upstream.Url);
         var client = factory.CreateClient();
@@ -230,10 +270,11 @@ public sealed class GatewayTests : IDisposable
         request.Content = new StringContent("", System.Text.Encoding.UTF8, "application/json");
         using var response = await client.SendAsync(request);
 
-        // The root is a page, not an API: only safe methods (GET/HEAD) redirect.
-        // A POST falls through to the monolith catch-all.
-        Assert.NotEqual(HttpStatusCode.Found, response.StatusCode);
-        Assert.Equal("/", _upstream.LastRequestPath);
+        // The root is a page, not an API: only safe methods (GET/HEAD)
+        // redirect. A POST is not redirected; with the monolith catch-all
+        // removed (3d.2) it is a 404 from the gateway, not proxied.
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Null(_upstream.LastRequestPath);
     }
 
     [Fact]
@@ -405,16 +446,21 @@ public sealed class OriginCheckTests : IDisposable
     }
 
     [Fact]
-    public async Task Non_api_mutation_without_origin_reaches_upstream()
+    public async Task Non_api_mutation_is_not_origin_checked()
     {
         using var factory = CreateFactory(_upstream.Url, ("PublicOrigin", PublicOrigin));
         var client = factory.CreateClient();
 
-        // The Razor pages stay on their own routes and keep form posts working.
-        using var response = await client.SendAsync(Mutation(HttpMethod.Post, "/Account/Login"));
+        // 3d.2 removed the Razor form posts (and the monolith catch-all). The
+        // Origin check still applies only to /api/**: a non-/api mutation with
+        // a foreign Origin is not Origin-rejected (no 403); with no catch-all
+        // it is a 404 from the gateway.
+        var request = Mutation(HttpMethod.Post, "/Account/Login");
+        request.Headers.Add("Origin", "http://evil.example");
+        using var response = await client.SendAsync(request);
 
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.Equal("/Account/Login", _upstream.LastRequestPath);
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Null(_upstream.LastRequestPath);
     }
 
     [Fact]

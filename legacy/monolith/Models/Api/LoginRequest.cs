@@ -4,7 +4,7 @@ namespace LoginAndReg.Models.Api
 {
     /// <summary>
     /// Body for POST /api/auth/login. The login is an arbitrary string (not
-    /// necessarily an e-mail) — the same rule as the legacy Razor form.
+    /// necessarily an e-mail).
     /// </summary>
     public sealed record LoginRequest
     {

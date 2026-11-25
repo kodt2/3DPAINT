@@ -9,7 +9,6 @@ using Microsoft.AspNetCore.Mvc.ModelBinding;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Extensions;
 using Microsoft.AspNetCore.Http.Features;
-using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.IdentityModel.Tokens;
@@ -99,7 +98,9 @@ builder.Services.AddSingleton<IMinioClient>(_ =>
     return client.Build();
 });
 
-builder.Services.AddControllersWithViews();
+// API-only MVC: no Razor view engine (step 3d.2 removed the Razor UI).
+// All endpoints are attribute-routed [ApiController] under /api/**.
+builder.Services.AddControllers();
 builder.Services.AddAuthorization();
 
 // OpenAPI for the /api surface only (the SPA client is generated from it;
@@ -178,18 +179,10 @@ catch (Exception ex)
 
 if (!app.Environment.IsDevelopment())
 {
-    app.UseExceptionHandler("/Home/Error");
     app.UseHsts();
 }
 
 app.UseHttpsRedirection();
-var provider = new FileExtensionContentTypeProvider();
-provider.Mappings[".glb"] = "model/gltf-binary";
-
-app.UseStaticFiles(new StaticFileOptions
-{
-    ContentTypeProvider = provider
-});
 
 // OpenAPI document for the SPA client (`npm run gen:api` in frontend/).
 // Served only when ASPNETCORE_ENVIRONMENT=Development (local dev stacks set it
@@ -358,8 +351,10 @@ app.Use(async (context, next) =>
 
 app.UseAuthorization();
 
-app.MapControllerRoute(
-    name: "default",
-    pattern: "{controller=Account}/{action=Auth}/{id?}");
+// Attribute-routed API controllers ([ApiController] under /api/**). Step 3d.2
+// removed the Razor controllers and the conventional default route, so the
+// conventional MapControllerRoute is no longer needed; MapControllers maps
+// the remaining attribute-routed API surface.
+app.MapControllers();
 
 app.Run();

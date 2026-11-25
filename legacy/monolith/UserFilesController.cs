@@ -100,8 +100,7 @@ public class UserFilesController : ControllerBase
         }
         catch (InvalidGlbFileException ex)
         {
-            // ProblemDetails on purpose (step 3c.4 contract); the legacy Razor
-            // upload UI falls back to its generic error text for this case.
+            // ProblemDetails on purpose (step 3c.4 contract).
             return Problem(
                 detail: ex.Message,
                 title: "Invalid GLB file",

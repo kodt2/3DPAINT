@@ -57,6 +57,8 @@
 
 ## 3. Контроллеры и маршруты
 
+> **С 3d.2 (2026-11-25) Razor удалён из монолита** (ADR 0017): строки ниже для `/`, `/Account/*`, `/Home/Index`, `wwwroot/*` больше не обслуживаются монолитом — это **исторический baseline**. Эти пути теперь отдаёт Gateway: `/` и старые Razor-пути `/Home/**`, `/Account/**` → `302 /spa/`, прочее неизвестное → `404`. Живые маршруты монолита — только JSON `/api/**` (см. строки `api/*` ниже и §13).
+
 | Маршрут | Метод | Что делает | Auth |
 |---|---|---|---|
 | `/` | GET | редирект на `/Account/Auth` | публичный |
@@ -107,6 +109,8 @@
 - Объём данных в проде: **не определён из репозитория** — вопрос для человека (см. §9).
 
 ## 6. Содержимое `data/` и `wwwroot/`
+
+> **С 3d.2 (2026-11-25) `wwwroot/` удалён** (ADR 0017): таблица ниже — исторический baseline. Статика Razor-UI (15M) больше не в репозитории и не в образе монолита; SPA несёт свои ассеты через nginx (`/assets/**`).
 
 ### `data/`
 - `AppDbContext.cs` — единственный файл; фактический `DbContext` (смешение кода и «данных», TD-9).
@@ -330,3 +334,49 @@ make test               # Gateway-тесты (dotnet test, .NET 10)
 | Baseline #15: SVG-заглушки превью в Razor-дашборде | Заменено реальными presigned-превью/3D-вьюером в SPA (3c) |
 
 **Примечание:** JSON-эндпоинты, которые использовали Razor-экраны (`/api/auth/*`, `/api/models`, `/api/files`, `/api/health`, `/api/me`, `/api/config`), **не удаляются** — ими пользуется SPA. Удаляются только Razor-`Views`, MVC-контроллеры-обёртки над ними (`AccountController`, `HomeController`) и статика `wwwroot/` (см. §11.2).
+
+## 13. Удаление Razor — монолит API-only (шаг 3d.2, 2026-11-25, ADR 0017)
+
+Фактическое состояние после 3d.2 (baseline §3/§6/§11.2 выше — исторический).
+
+### 13.1 Что удалено (80 файлов в git)
+
+- `Views/` — 6 файлов (Razor-шаблоны: `Account/Auth`, `Home/Index`, `_AuthLayout`, `_HomeLayout`, `_HomeLayout.css`, `_ViewImports`).
+- `wwwroot/` — 72 файла (CSS/JS, Bootstrap 5, jQuery + validation, three.js 0.161, `models/auth-object.glb` 3.7M, favicon). Всего 15M.
+- `Controllers/AccountController.cs`, `Controllers/HomeController.cs` — MVC-обёртки над `IAccountService`/`IFileStorageService` для Razor-форм; SPA использует `AuthApiController` и `/api/models`.
+
+### 13.2 Что сохранено (использует SPA)
+
+- JSON-контроллеры: `AuthApiController`, `ModelsApiController`, `UserFilesController`, `ConfigApiController`, `ApiStatusController` (`/api/health`).
+- `Services/`: `AccountService`, `JwtService`, `FileStorageService`, `ThumbnailService`, `AuthCookie`.
+- `data/AppDbContext.cs` + миграции EF Core, `Program.cs`-пайплайн (middleware 3b.0/3c.4, JWT, multipart-лимиты).
+- Мёртвый, но не Razor-only код **не удалён**, зафиксирован в `TECH_DEBT.md`: `AccountService.DeleteAccountAsync`, `FileUploadViewModel`, `AccountService._fileStorageService` (TD-7), `System.Reactive` (TD-10).
+
+### 13.3 `Program.cs`: ключевое изменение
+
+`AddControllersWithViews()` → `AddControllers()`; удалены `UseStaticFiles`, `UseExceptionHandler("/Home/Error")` (action не существовал, TD-5), конвенционный `MapControllerRoute`. **Добавлен `app.MapControllers()`** — без него после удаления `MapControllerRoute` весь `/api/**` отдавал 404 (атрибут-роутинг `[ApiController]` требует `MapControllers()`; в оригинале их маппил `MapControllerRoute`). Живой прогон подтвердил: после добавления `GET /api/health` → 200.
+
+### 13.4 Маршрутизация Gateway (без catch-all)
+
+| Путь | Метод | Действие |
+|---|---|---|
+| `/api/**` | все | → монолит |
+| `/spa/**`, `/assets/**` | GET/HEAD | → frontend (nginx) |
+| `/` | GET/HEAD | `302 /spa/` (относительный `Location`) |
+| `/Home/**`, `/Account/**` | GET/HEAD | `302 /spa/` (относительный `Location`) |
+| `/Home/**`, `/Account/**` | иные методы | `404` |
+| остальное | — | `404` (JSON problem, `MapFallback`) |
+
+Новый `LegacyRazorRedirectMiddleware` (GET/HEAD `/Home/**`, `/Account/**` → 302 `/spa/`), match по префиксу точно или с `/` (lookalike `/Homepage` → 404). Удалён catch-all-маршрут монолита.
+
+### 13.5 Замеры и валидация
+
+| Метрика | До | После |
+|---|---|---|
+| Файлов в git (`legacy/monolith`) | 122 | 42 (−80) |
+| Диск без `obj`/`bin` | 15M | 272K |
+| Docker-образ монолита | 360MB | 340MB |
+| Чистая сборка (no-cache) | 35.6s | 25.6s |
+| Предупреждений (уник.) | 7 | 7 (новых нет) |
+
+Валидация (всё зелёное): `make test` (сборка монолита + 60 Gateway-тестов), `make up` (health 200, маршрутизация проверена живым), `make check-prod` (PASS), `make e2e` (31 passed), `make e2e-https` (33 passed, включая редирект с сохранением origin/порта через Caddy).

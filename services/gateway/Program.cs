@@ -69,11 +69,15 @@ builder.Services
 builder.Services.AddHealthChecks()
     .AddCheck<UpstreamHealthCheck>(UpstreamHealthCheck.Name, tags: new[] { UpstreamHealthCheck.Tag });
 
-// Route scheme (ADR 0011). Explicit routes win over the catch-all by Order:
+// Route scheme (ADR 0011, updated in step 3d.2). Only explicit routes exist
+// (no catch-all): the Razor UI was removed from the monolith, so unknown
+// paths are no longer proxied to it. The gateway returns 404 for anything
+// that is not /api/**, /spa/** or /assets/** (MapFallback below). Old Razor
+// page routes (/Home/**, /Account/**) are 302-redirected to /spa/ by
+// LegacyRazorRedirectMiddleware before routing.
 //   1. /api/**    -> monolith (JSON API, incl. /api/files/upload)
 //   2. /assets/** -> frontend (hashed build assets, immutable caching)
 //   3. /spa/**    -> frontend (SPA pages, prefix stripped)
-//   4. /**        -> monolith (Razor UI, static files)
 var apiRoute = new RouteConfig
 {
     RouteId = "api-to-monolith",
@@ -98,15 +102,6 @@ var spaRoute = new RouteConfig
     Order = 3,
     Match = new RouteMatch { Path = "/spa/{**catch-all}" },
     Transforms = SpaTransforms(),
-};
-var monolithRoute = new RouteConfig
-{
-    RouteId = "monolith",
-    ClusterId = "monolith",
-    Order = 4,
-    MaxRequestBodySize = maxRequestBody,
-    Match = new RouteMatch { Path = "{**catch-all}" },
-    Transforms = StandardTransforms(),
 };
 var monolithCluster = new ClusterConfig
 {
@@ -140,7 +135,7 @@ var frontendCluster = new ClusterConfig
     },
 };
 builder.Services.AddReverseProxy().LoadFromMemory(
-    new[] { apiRoute, assetsRoute, spaRoute, monolithRoute },
+    new[] { apiRoute, assetsRoute, spaRoute },
     new[] { monolithCluster, frontendCluster });
 
 // Per-client key for the auth rate limit (ADR 0011). By default no proxy is
@@ -176,10 +171,16 @@ app.UseForwardedHeaders();
 app.UseMiddleware<OriginCheckMiddleware>();
 
 // Site root -> SPA (3d.1): a relative 302 to /spa/ (no absolute URL, ADR 0016).
-// Registered before any Map* (health, reverse proxy) so it runs before the
-// routing middleware selects the catch-all endpoint and forwards "/" to the
-// monolith's Razor root.
+// Registered before any Map* (health, reverse proxy) so it runs before routing;
+// a relative Location keeps the origin and any non-standard port (https/Caddy).
 app.UseMiddleware<RootRedirectMiddleware>();
+
+// Old Razor page routes (/Home/**, /Account/**) -> SPA (3d.2): the Razor UI
+// was removed from the monolith, so these page paths no longer exist. A
+// relative 302 to /spa/ for safe methods (GET/HEAD); other methods fall
+// through to the 404 (no monolith catch-all). Registered next to
+// RootRedirectMiddleware, before routing.
+app.UseMiddleware<LegacyRazorRedirectMiddleware>();
 
 // Liveness must not depend on the upstream: run no checks, always healthy while the process is up.
 app.MapHealthChecks("/health/live", new HealthCheckOptions { Predicate = _ => false });
@@ -188,6 +189,22 @@ app.MapHealthChecks(
     new HealthCheckOptions { Predicate = registration => registration.Tags.Contains(UpstreamHealthCheck.Tag) });
 
 app.MapReverseProxy();
+
+// Unknown paths -> 404 from the gateway (3d.2). The monolith's catch-all was
+// removed with the Razor UI, and there is deliberately no catch-all to the
+// frontend either: only /api/**, /spa/** and /assets/** are proxied. The
+// relative 302s for "/" and the old Razor routes are handled by the redirect
+// middlewares above, before routing.
+app.MapFallback(async context =>
+{
+    context.Response.StatusCode = StatusCodes.Status404NotFound;
+    await context.Response.WriteAsJsonAsync(new
+    {
+        type = "https://httpwg.org/specs/rfc9457.html#section.problem",
+        title = "Not Found",
+        status = 404,
+    });
+});
 
 await app.RunAsync();
 

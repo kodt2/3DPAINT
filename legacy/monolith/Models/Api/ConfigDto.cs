@@ -11,8 +11,7 @@ public class ConfigDto
     public long MaxUploadBytes { get; init; }
 
     /// <summary>
-    /// File extensions the SPA upload accepts (the SPA is GLB-only; the
-    /// monolith keeps its full whitelist for the legacy Razor UI).
+    /// File extensions the SPA upload accepts (the SPA is GLB-only).
     /// </summary>
     public string[] AllowedUploadExtensions { get; init; } = Array.Empty<string>();
 }
