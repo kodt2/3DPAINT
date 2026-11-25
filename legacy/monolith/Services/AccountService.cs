@@ -8,7 +8,6 @@ public class AccountService : IAccountService
 {
     private readonly AppDbContext _context;
     private readonly IPasswordService _passwordService;
-    private readonly FileStorageService _fileStorageService;
 
     public AccountService(AppDbContext context, IPasswordService passwordService)
     {
@@ -74,35 +73,5 @@ public class AccountService : IAccountService
         }
 
         return true;
-    }
-
-    public async Task<bool> DeleteAccountAsync(FileUploadViewModel model)
-    {
-        using var transaction = await _context.Database.BeginTransactionAsync();
-
-        try
-        {
-            //await _fileStorageService.DeleteAllUserFilesAsync(model);
-            
-            var user = await _context.Users.FindAsync(model.UserId);
-            var person = await _context.Persons.FindAsync(model.UserId);
-            if (user != null)
-            {
-                if (person != null)
-                {
-                    _context.Persons.Remove(person);
-                }
-                _context.Users.Remove(user);
-                await _context.SaveChangesAsync();
-            }
-
-            await transaction.CommitAsync();
-            return true;
-        }
-        catch (Exception)
-        {
-            await transaction.RollbackAsync();
-            return false;
-        }
     }
 }
