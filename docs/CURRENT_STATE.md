@@ -273,3 +273,58 @@ Layout'ы: `_HomeLayout` (только Google Fonts + `css/home-dashboard.css`),
 **Экраны Razor не переносились и не удалялись.**
 
 Скриншот: `docs/screenshots/step3a-spa-stub.png`.
+
+## 12. Смоук-сьюит «после зачистки» (шаг 3d.0)
+
+Набор проверок, который должен оставаться зелёным **после** удаления Razor/`wwwroot` (шаг 3d.2). Это «список того, что должно работать», привязанный к конкретному способу проверки. Сценарии, которые уходят вместе с Razor, вынесены в конец раздела (они из этого сьюита выпадают).
+
+**Как прогонять (минимальный набор):**
+
+```bash
+make up                 # основной стек; контейнеры healthy
+make check-prod         # production-профиль: наружу только Caddy, нет dev/localhost-origin
+make e2e                # Playwright через Gateway (http)
+make e2e-https          # Playwright через Caddy (https, внутренний CA) — ОБЯЗАТЕЛЬНО в сьюите
+cd frontend && npm ci && npm run lint && npm test && npm run build
+docker run --rm -v "$PWD:/work" -w /work/legacy/monolith mcr.microsoft.com/dotnet/sdk:8.0 dotnet build   # монолит
+make test               # Gateway-тесты (dotnet test, .NET 10)
+```
+
+### 12.1 Сценарий → как проверяется
+
+| # | Сценарий | Как проверяется |
+|---|---|---|
+| 1 | Стек поднимается, контейнеры healthy, `GET /health/live` и `/health/ready` → 200 | `make up`; E2E ходит в `/health/*` через Gateway; `make check-prod` (конфиг) |
+| 2 | Регистрация нового пользователя; дубликат → 409 | E2E `e2e/auth.spec.ts` (`make e2e`, `make e2e-https`) |
+| 3 | Логин: неверный пароль → 401; верный → httpOnly-cookie `jwt` | E2E `e2e/auth.spec.ts` |
+| 4 | `GET /api/me` без cookie → 401 JSON; с cookie → профиль | E2E `e2e/auth.spec.ts`; ручной `curl` |
+| 5 | Библиотека: список только своих моделей, пагинация, пустое состояние | E2E `e2e/library.spec.ts` |
+| 6 | Удаление модели: своя → 200 (исчезает из S3 и БД); чужая → 404 | E2E `e2e/library.spec.ts` (IDOR, идемпотентность) |
+| 7 | Загрузка: валидный `.glb` появляется в списке; чужое расширение → 400 | E2E `e2e/upload.spec.ts` |
+| 8 | Загрузка сверх `MAX_UPLOAD_BYTES` → 413 | E2E `e2e/upload.spec.ts` (через `E2E_MONOLITH_URL`) |
+| 9 | 3D-вьюер: GLB рендерится, панель с вершинами/треугольниками | E2E `e2e/viewer.spec.ts` |
+| 10 | Сжатые GLB (Draco/Meshopt) декодируются локальными декодерами, без CDN | E2E `e2e/compressed-glb.spec.ts` |
+| 11 | Сжатый GLB + presigned через **HTTPS/Caddy**; декодеры с origin-сайта `/assets/decoders/**` | E2E `e2e/https-viewer.spec.ts` (`make e2e-https`) |
+| 12 | Origin/CSRF: мутация `/api/**` с чужим/отсутствующим Origin → 403; `text/plain` → 415 | Gateway-тесты (`Gateway.Tests.cs`); ручной `curl` |
+| 13 | Rate limiting входа (XFF-доверие, истечение окна) | Gateway-тесты; живой прогон `make up` |
+| 14 | Production-стек: наружу только Caddy на `BIND_ADDR`, нет порта монолита, нет dev/localhost-origin | `make check-prod` (`infra/check-prod-stack.sh`) |
+| 15 | Корень `/` → 302 → `/spa/` (относительный `Location`), origin сохраняется через Caddy (https, нестандартный порт) | Gateway-тесты + E2E `e2e/https-root.spec.ts` (шаг 3d.1) |
+| 16 | SPA-навигация без полной перезагрузки (библиотека ↔ вьюер, выход) | E2E `e2e/spa-nav.spec.ts` (шаг 3d.1) |
+| 17 | `/api/health` остаётся после удаления «Проверить /api» | E2E (health-хелпер); ручной `curl` |
+| 18 | Скриншоты: login, library, viewer (сжатая модель), mobile 390 px | `docs/screenshots/` (шаг 3d.1) |
+
+### 12.2 Сценарии, которые уходят вместе с Razor (и почему)
+
+Эти пункты из ручного чек-листа (§10) и baseline (§8) **перестают существовать** после удаления Razor (3d.2) — у них нет соответствия в SPA, либо они заменяются SPA-поведением.
+
+| Сценарий (было) | Станет / почему уходит |
+|---|---|
+| `GET /` → 200 Razor-страница входа (форма + Three.js демо-фон) | `GET /` → **302 → `/spa/`** → SPA-логин (шаг 3d.1). Three.js-фон был декорацией Razor; в SPA логин без декоративного вьюера — функциональности не теряется |
+| `GET /Home/Index` (Razor-дашборд: SVG-превью-карточки, кнопки-заглушки «Живопись»/«Заказ») | SPA `/spa/library`: реальные presigned-превью + 3D-вьюер (3c). Кнопки-заглушки были no-op (нет бэкенда) — переносить нечего |
+| `GET /Home/Index` / `GET /api/files` без JWT → серверный 401/редирект на Razor-аутентификацию | SPA обрабатывает незалогиненное состояние **на клиенте** (`IndexRedirect` → `/spa/login`, `ProtectedRoute`). Серверного Razor-редиректа больше нет |
+| Razor-формы регистрации/входа (E1: `GET /Account/Register`, `GET /Account/Auth`) | SPA `/spa/register` и `/spa/login` (те же JSON-эндпоинты `AuthApiController`). Экраны Razor дублируют SPA и удаляются |
+| Декор Razor-аута: «Забыли пароль?», кнопки Google/GitHub/Discord | Удаляются: в Razor были декоративными (без бэкенда/интеграций), функциональности не было — сохранять нечего |
+| Пункт чек-листа «(3b.0) Razor-формы работают» | Пункт исчезает: Razor-UI после 3d.2 отсутствует |
+| Baseline #15: SVG-заглушки превью в Razor-дашборде | Заменено реальными presigned-превью/3D-вьюером в SPA (3c) |
+
+**Примечание:** JSON-эндпоинты, которые использовали Razor-экраны (`/api/auth/*`, `/api/models`, `/api/files`, `/api/health`, `/api/me`, `/api/config`), **не удаляются** — ими пользуется SPA. Удаляются только Razor-`Views`, MVC-контроллеры-обёртки над ними (`AccountController`, `HomeController`) и статика `wwwroot/` (см. §11.2).
