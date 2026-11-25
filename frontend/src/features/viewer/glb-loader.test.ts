@@ -1,6 +1,72 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as THREE from 'three';
 import { buildCorruptGlb, buildCubeGlb, buildLargeGlb } from '../../test/glbfactory';
-import { createTrustedLoadingManager, loadGlb, parseGlb } from './glb-loader';
+import { DECODERS_BASE_URL } from './decoder-assets';
+import {
+  createTrustedLoadingManager,
+  loadGlb,
+  parseGlb,
+} from './glb-loader';
+
+/**
+ * The lazy decoder chunk is mocked: real decoder workers cannot run under
+ * jsdom, and the unit under test here is glb-loader's pipeline (when the
+ * chunk is imported, what requirements are passed, when dispose runs),
+ * not the decoders themselves (those are covered by E2E).
+ */
+const decodersMock = vi.hoisted(() => {
+  const holder: {
+    parse: (onLoad: (g: unknown) => void, onError: (e: unknown) => void) => void;
+  } = { parse: () => {} };
+  const dispose = vi.fn();
+  const configureGlbLoader = vi.fn(
+    (_manager: unknown, _requirements: unknown) => ({
+      loader: {
+        parse: (
+          _buffer: ArrayBuffer,
+          _path: string,
+          onLoad: (g: unknown) => void,
+          onError: (e: unknown) => void,
+        ) => {
+          holder.parse(onLoad, onError);
+        },
+      },
+      dispose,
+    }),
+  );
+  return { holder, dispose, configureGlbLoader };
+});
+
+vi.mock('./glb-decoders', () => ({
+  configureGlbLoader: decodersMock.configureGlbLoader,
+}));
+
+/** A valid GLB container with only a JSON chunk (no BIN chunk). */
+function buildJsonGlb(json: Record<string, unknown>): ArrayBuffer {
+  const jsonBytes = new TextEncoder().encode(JSON.stringify(json));
+  const out = new ArrayBuffer(20 + jsonBytes.length);
+  const view = new DataView(out);
+  view.setUint32(0, 0x46546c67, true);
+  view.setUint32(4, 2, true);
+  view.setUint32(8, out.byteLength, true);
+  view.setUint32(12, jsonBytes.length, true);
+  view.setUint32(16, 0x4e4f534a, true);
+  new Uint8Array(out, 20).set(jsonBytes);
+  return out;
+}
+
+function stubFetchWith(glb: ArrayBuffer) {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => {
+      const bytes = new Uint8Array(glb);
+      return new Response(bytes, {
+        status: 200,
+        headers: { 'content-length': String(bytes.length) },
+      });
+    }),
+  );
+}
 
 describe('createTrustedLoadingManager', () => {
   it('allows blob: and data: URIs', () => {
@@ -37,6 +103,22 @@ describe('createTrustedLoadingManager', () => {
     } catch (error) {
       expect((error as Error).message.length).toBeLessThanOrEqual(170);
     }
+  });
+
+  it('allows the viewer\'s own decoder assets (same origin, versioned path)', () => {
+    const manager = createTrustedLoadingManager();
+    const url = `${DECODERS_BASE_URL}draco/draco_decoder.wasm`;
+    expect(manager.resolveURL(url)).toBe(url);
+    expect(manager.resolveURL(`${DECODERS_BASE_URL}basis/basis_transcoder.js`)).toBe(
+      `${DECODERS_BASE_URL}basis/basis_transcoder.js`,
+    );
+  });
+
+  it('does not trust decoder assets of another three version', () => {
+    const manager = createTrustedLoadingManager();
+    expect(() =>
+      manager.resolveURL('/assets/decoders/three-0.0.0/draco/draco_decoder.wasm'),
+    ).toThrow(/external resource inside glTF is not allowed/);
   });
 });
 
@@ -247,5 +329,119 @@ describe('loadGlb', () => {
       'compression',
     );
     expect(toGlbError(new Error('something else'), 'parse').kind).toBe('parse');
+  });
+});
+
+describe('decoder-aware loading (step 3c.5)', () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    decodersMock.configureGlbLoader.mockClear();
+    decodersMock.dispose.mockClear();
+    decodersMock.holder.parse = () => {}; // default: the decode hangs
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('rejects an unsupported required extension BEFORE importing the decoder chunk', async () => {
+    stubFetchWith(
+      buildJsonGlb({
+        asset: { version: '2.0' },
+        extensionsRequired: ['FOO_fake_extension'],
+      }),
+    );
+
+    await expect(
+      loadGlb('http://storage.example/dl', { signal: new AbortController().signal }),
+    ).rejects.toMatchObject({
+      name: 'GlbLoadError',
+      kind: 'unsupported-extension',
+      detail: 'FOO_fake_extension',
+    });
+    // The decoder chunk (and its worker pools) must never be created for a
+    // file the viewer rejects up front.
+    expect(decodersMock.configureGlbLoader).not.toHaveBeenCalled();
+  });
+
+  it('installs exactly the required decoders and disposes them after success', async () => {
+    decodersMock.holder.parse = (onLoad) => onLoad({ scene: new THREE.Group() });
+    stubFetchWith(
+      buildJsonGlb({
+        asset: { version: '2.0' },
+        extensionsUsed: ['KHR_draco_mesh_compression'],
+      }),
+    );
+
+    const { scene } = await loadGlb('http://storage.example/dl', {
+      signal: new AbortController().signal,
+    });
+
+    expect(scene).toBeInstanceOf(THREE.Group);
+    expect(decodersMock.configureGlbLoader).toHaveBeenCalledTimes(1);
+    expect(decodersMock.configureGlbLoader).toHaveBeenCalledWith(
+      expect.any(THREE.LoadingManager),
+      { draco: true, meshopt: false, ktx2: false },
+    );
+    expect(decodersMock.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('maps a decode error mentioning draco to kind "compression"', async () => {
+    decodersMock.holder.parse = (_onLoad, onError) =>
+      onError(new Error('DRACOLoader: decode failed'));
+    stubFetchWith(
+      buildJsonGlb({
+        asset: { version: '2.0' },
+        extensionsUsed: ['KHR_draco_mesh_compression'],
+      }),
+    );
+
+    await expect(
+      loadGlb('http://storage.example/dl', { signal: new AbortController().signal }),
+    ).rejects.toMatchObject({ name: 'GlbLoadError', kind: 'compression' });
+    expect(decodersMock.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('maps a hung decode to kind "decode-timeout" and disposes the decoders', async () => {
+    // holder.parse default: hang
+    stubFetchWith(
+      buildJsonGlb({
+        asset: { version: '2.0' },
+        extensionsUsed: ['EXT_meshopt_compression'],
+      }),
+    );
+
+    await expect(
+      loadGlb('http://storage.example/dl', {
+        signal: new AbortController().signal,
+        decodeTimeoutMs: 50,
+      }),
+    ).rejects.toMatchObject({ name: 'GlbLoadError', kind: 'decode-timeout' });
+    expect(decodersMock.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('aborts a hung decode with kind "aborted" and disposes the decoders', async () => {
+    const controller = new AbortController();
+    stubFetchWith(
+      buildJsonGlb({
+        asset: { version: '2.0' },
+        extensionsUsed: ['KHR_texture_basisu'],
+      }),
+    );
+
+    const promise = loadGlb('http://storage.example/dl', { signal: controller.signal });
+    setTimeout(() => controller.abort(), 10);
+
+    await expect(promise).rejects.toMatchObject({ name: 'GlbLoadError', kind: 'aborted' });
+    expect(decodersMock.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('never installs decoders for a plain GLB', async () => {
+    stubFetchWith(buildCubeGlb());
+
+    await loadGlb('http://storage.example/dl', { signal: new AbortController().signal });
+
+    expect(decodersMock.configureGlbLoader).not.toHaveBeenCalled();
+    expect(decodersMock.dispose).not.toHaveBeenCalled();
   });
 });
