@@ -162,9 +162,12 @@ networks:
     # KNOWN_PROXIES to exactly that IP, so the rate-limit client key is
     # taken from X-Forwarded-For only for connections from Caddy. The
     # values must stay in sync with infra/compose.https.yml.
+    # Parameterized (step 4.0) so the throwaway E2E/HTTPS stands can use a
+    # different /16 and run alongside the main stack without a network-pool
+    # overlap; the main stack keeps the 172.28.0.0/16 default.
     ipam:
       config:
-        - subnet: 172.28.0.0/16
+        - subnet: ${APP_NETWORK_SUBNET:-172.28.0.0/16}
 
 volumes:
   pgdata:
