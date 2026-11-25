@@ -62,7 +62,7 @@ COMPOSE_E2E_HTTPS := \
     $(COMPOSE) -p 3dpaint-e2e-https -f infra/compose.e2e.yml -f infra/compose.https.yml --profile https
 E2E_HTTPS_DOWN := $(COMPOSE) -p 3dpaint-e2e-https -f infra/compose.e2e.yml -f infra/compose.https.yml --profile https down --volumes --remove-orphans
 
-.PHONY: up up-dev down logs build test e2e e2e-https up-https down-https
+.PHONY: up up-dev down logs build test e2e e2e-https up-https down-https check-prod
 
 up: ## Build (if needed) and start the full stack
 	$(COMPOSE) up -d --build
@@ -92,6 +92,16 @@ up-https: ## Start the stack with the Caddy TLS edge (https profile, ADR 0016)
 
 down-https: ## Stop the HTTPS stack (the profile must be on: caddy otherwise is not in the config)
 	$(COMPOSE_HTTPS) down
+
+# Production profile validation (step 3d.0, smoke suite): resolves
+# infra/compose.yml + infra/compose.https.yml (profile https) and asserts that
+# only Caddy is published on the external address, the monolith publishes no
+# ports, and no dev/localhost origins leak. Pass CHECK_PROD_ARGS to model a
+# specific deployment, e.g.
+#   make check-prod CHECK_PROD_ARGS="--bind 192.168.1.100 --origin https://3dpaint.example.com --s3-origin https://3dpaint.example.com --tls prod"
+CHECK_PROD_ARGS ?= --tls prod
+check-prod: ## Validate the production compose profile (ports + origins)
+	./infra/check-prod-stack.sh $(CHECK_PROD_ARGS)
 
 e2e: ## Run Playwright against a throwaway stack (own ports, raised rate limit)
 	-@$(E2E_DOWN) >/dev/null 2>&1
