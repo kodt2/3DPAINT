@@ -175,6 +175,12 @@ app.UseForwardedHeaders();
 // before the reverse proxy so rejected requests never reach the monolith.
 app.UseMiddleware<OriginCheckMiddleware>();
 
+// Site root -> SPA (3d.1): a relative 302 to /spa/ (no absolute URL, ADR 0016).
+// Registered before any Map* (health, reverse proxy) so it runs before the
+// routing middleware selects the catch-all endpoint and forwards "/" to the
+// monolith's Razor root.
+app.UseMiddleware<RootRedirectMiddleware>();
+
 // Liveness must not depend on the upstream: run no checks, always healthy while the process is up.
 app.MapHealthChecks("/health/live", new HealthCheckOptions { Predicate = _ => false });
 app.MapHealthChecks(
