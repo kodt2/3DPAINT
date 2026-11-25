@@ -27,12 +27,14 @@
 | Microsoft.AspNetCore.Authentication.JwtBearer | 8.0.0 | авторизация по JWT (cookie + Bearer) |
 | Microsoft.AspNetCore.Mvc.NewtonsoftJson | 8.0.0 | JSON-сериализация (Newtonsoft) |
 | Microsoft.EntityFrameworkCore.Tools | 8.0.4 | CLI-инструменты EF (миграции) |
-| System.Reactive | 6.0.1 | **не используется** (мёртвая зависимость) |
 
-Сборка: `dotnet build` (в Docker) — **успешно**, 7 предупреждений:
-- CS8618: `AccountService._fileStorageService` (readonly, не инициализирован) и `FileUploadViewModel` (все свойства) — nullable не включён, предупреждения «на пустом месте».
-- CS0169: `AccountService._fileStorageService` — поле не используется.
+(с шага 4.0) Зависимость `System.Reactive` (6.0.1) удалена — была мёртвой (TD-10), ссылок в коде нет (проверено поиском + сборкой).
+
+Сборка: `dotnet build` (в Docker) — **успешно**, 5 предупреждений:
+- CS8618 (×5): неинициализированные non-nullable свойства в `RegistrationViewModel`/`LoginViewModel` (Razor-ViewModel'ы, nullable не включён) — предсуществующие, «на пустом месте».
 - CS0618 (×5): устаревшие конструкторы `JsonWebTokenHandler`/`SecurityTokenDescriptor` в `AccountService` (HMACSecurityKey).
+
+(с шага 4.0) Предупреждения CS8618/CS0169 для `AccountService._fileStorageService` и `FileUploadViewModel` исчезли: мёртвое поле и ViewModel удалены (TD-7).
 
 ## 2. Базы данных / хранилища
 
@@ -67,8 +69,8 @@
 | `/Account/Register` | POST | валидация (FluentValidation: FullName/BirthDate/Login/Password, Password≥6), создаёт `User`+`Person`; JSON `{success, message}` | публичный |
 | `/Home/Index` | GET | главная страница — «библиотека ассетов» (Razor) | **JWT** |
 | `/api/files` | GET | JSON-список файлов текущего пользователя: `id, fileName, fileSize, createdAt, previewUrl` (presigned 30 мин), `thumbnailUrl` (presigned 30 мин) | **JWT** |
-| `/api/files/upload` | POST | multipart `file`: whitelist расширений (STL/OBJ/STEP/STP/GLB) + размер ≤ `MAX_UPLOAD_BYTES` (дефолт 100 MiB, ADR 0015; body-уровень = лимит + 1 MiB envelope, превышение envelope — «голый» 413, превышение лимита — `413 ProblemDetails` `File too large`); (с 3c.4) для `.glb` — проверка заголовка GLB (magic `glTF`, версия 2, длина ≤ размеру файла и ≤ 64 MiB), иначе `400 ProblemDetails` `Invalid GLB file`; пишет файл в S3 (`{userId}/{fileId}{ext}`) и SVG-заглушку (`{userId}/thumbnails/{fileId}.svg`); JSON-ответ как в `/api/files` | **JWT** |
-| `/api/config` | GET | (с 3c.4, ADR 0015) публичная конфигурация SPA: `{maxUploadBytes, allowedUploadExtensions: [".glb"]}` — лимит тот же `MAX_UPLOAD_BYTES`, список расширений принимает **SPA** (Razor UI сохраняет полный whitelist) | публичный |
+| `/api/files/upload` | POST | multipart `file`: whitelist расширений из конфига `ALLOWED_UPLOAD_EXTENSIONS` (дефолт `.glb`, шаг 4.0; нормализация: точка/регистр/дубли) + размер ≤ `MAX_UPLOAD_BYTES` (дефолт 100 MiB, ADR 0015; body-уровень = лимит + 1 MiB envelope, превышение envelope — «голый» 413, превышение лимита — `413 ProblemDetails` `File too large`); (с 3c.4) для `.glb` — проверка заголовка GLB (magic `glTF`, версия 2, длина ≤ размеру файла и ≤ 64 MiB), иначе `400 ProblemDetails` `Invalid GLB file`; пишет файл в S3 (`{userId}/{fileId}{ext}`) и SVG-заглушку (`{userId}/thumbnails/{fileId}.svg`); JSON-ответ как в `/api/files` | **JWT** |
+| `/api/config` | GET | (с 3c.4, ADR 0015) публичная конфигурация SPA: `{maxUploadBytes, allowedUploadExtensions}` — лимит тот же `MAX_UPLOAD_BYTES`, список расширений — **тот же единый источник**, что валидирует сервер (`FileStorageService`, из `ALLOWED_UPLOAD_EXTENSIONS`, шаг 4.0): SPA и сервер не могут расходятся | публичный |
 | `/api/models` | GET | (с шага 3c.2, ADR 0013) страница моделей текущего пользователя: `items` (`id, name, sizeBytes, createdAt, thumbnailUrl` — presigned по публичному эндпоинту), `page, pageSize, totalCount, totalPages`; `pageSize` 1..100 (дефолт 20), иначе `400` ProblemDetails; сортировка — новые сначала | **JWT** |
 | `/api/models/{id}` | GET | (с шага 3c.2) деталь модели: как карточка + `downloadUrl` (presigned); чужой/несуществующий `id` — `404` (owner-check в SQL) | **JWT** |
 | `/api/models/{id}` | DELETE | (с шага 3c.2) удаление записи + S3-объектов (оригинал + thumbnail; сначала S3, потом БД, ошибка S3 — `500`); повторный `DELETE` — `404` (идемпотентность); чужой `id` — `404` | **JWT** |
@@ -174,7 +176,7 @@
 
 1. **Какие СУБД и две БД?** Одна СУБД — PostgreSQL 15 (БД из `DB_NAME`, в example `DB`), в ней: `Users`, `Persons`, `UserFiles`, `__EFMigrationsHistory`. «Вторая БД» — это MinIO (объектное хранилище, бакет `userdata`), не RDBMS.
 2. **Где лежат файлы?** MinIO, ключи `{userId}/{fileId}{ext}` и `{userId}/thumbnails/{fileId}.svg`; метаданные в `UserFiles`. **Количество/размер файлов в проде — неизвестно из репозитория, вопрос для человека.**
-3. **Форматы:** STL, OBJ, STEP/STP, GLB (whitelist в `FileStorageService.AllowedExtensions` + клиентский whitelist).
+3. **Форматы:** (с шага 4.0) whitelist из конфига `ALLOWED_UPLOAD_EXTENSIONS` (дефолт `.glb` — единственный валидный формат); клиентский и серверный whitelist — единый источник `UploadOptions.AllowedExtensions` (`/api/config` отдаёт тот же список, что валидирует `FileStorageService`).
 4. **Версия .NET:** 8.0.
 5. **Есть ли пользователи/данные, которые нельзя потерять?** **Неизвестно из репозитория** — вопрос для человека (продакшен: 3dpaint.tw1.su).
 6. **Google/GitHub-провайдеры?** В коде только декоративные кнопки. **Нужны ли они — вопрос для человека.**
@@ -212,7 +214,7 @@
 - [ ] (с шага 3c.2) `GET`/`DELETE /api/models/{чужой-id}` от другого пользователя → **404** (не 403), модель владельца на месте.
 - [ ] (с шага 3c.2) `DELETE /api/models/{id}` → **204**; повторный `DELETE` → **404**; старый presigned URL после удаления не открывается.
 - [ ] (с шага 3c.2) `/spa/library`: список с превью и пагинацией, удаление с подтверждением; DTO без `storage:`, S3-ключей-полей и данных владельца (E2E: `make e2e`).
-- [ ] (с шага 3c.3) `/spa/models/{id}`: GLB-модель рендерится (canvas, камера по bounding box, OrbitControls), инфо-панель (вершины/треугольники/меши/материалы/текстуры/размеры/UV); чужая модель → «Модель не найдена»; битый GLB → «Файл повреждён»; не-GLB (.stl/.obj/.step/.stp) → уведомление + «Скачать» (E2E: `make e2e`).
+- [ ] (с шага 3c.3) `/spa/models/{id}`: GLB-модель рендерится (canvas, камера по bounding box, OrbitControls), инфо-панель (вершины/треугольники/меши/материалы/текстуры/размеры/UV); чужая модель → «Модель не найдена»; битый GLB → «Файл повреждён»; не-GLB (.stl/.obj/.step/.stp) → уведомление + «Скачать» (с шага 4.0 недостижимо через upload — сервер отклоняет 400 до записи; покрытие — unit `ViewerPage.test.tsx`, E2E `e2e/viewer.spec.ts` проверяет server-side отказ `.stl`).
 - [ ] (с шага 3c.1a) после 429 от rate limiting окно **открывается** через `RATE_LIMIT_WINDOW_SECONDS` (65 с) — следующий запрос доходит до монолита (401/200, не 429; проверено live, ADR 0016 §4.2).
 - [ ] (шаг H) `make up-https` → сайт и S3 только через Caddy: `https://localhost:443/health/ready` → 200 (внутренний CA), наружу опубликованы только порты Caddy; HSTS-заголовка в lan-режиме **нет** (prod-only); `make e2e-https` — 30/30 (Draco-модель по HTTPS, декодеры с origin сайта, presigned S3 только https, без mixed-content/CORS-ошибок), plain `make e2e` не тронут.
 
@@ -271,6 +273,8 @@ Layout'ы: `_HomeLayout` (только Google Fonts + `css/home-dashboard.css`),
 (с шага 3c.1) Origin-проверка Gateway усилена: сравнение разбором URL (`scheme + host + порт`), не строковым префиксом — `Referer: http://localhost:8080.evil.com` → `403`, `https://example.com:443` == `https://example.com`, литерал `Origin: null` → `403`; найден и исправлен баг: env `PUBLIC_ORIGIN` читался как `PublicOrigin` (case-sensitive lookup в .NET 10) и молча игнорировался — регрессионный тест добавлен. Dev-профиль (`make up-dev`) через `infra/compose.dev.yml` добавляет в `PUBLIC_ORIGIN` origin Vite-сервера `http://localhost:5173` (браузер ходит в Vite, `/api` проксируется в Gateway); в production-стек этот origin не попадает (проверено: `make up` + `Origin: http://localhost:5173` → `403`).
 
 (шаг H, ADR 0016) TLS-контур **Caddy** (`caddy:2.11.9-alpine`, тег закреплён): `infra/compose.https.yml` (профиль `https`, `make up-https`/`make down-https`) + `infra/caddy/entrypoint.sh` генерирует Caddyfile из env. Наружу публикуются **только** порты Caddy на `${BIND_ADDR}` (дефолт `127.0.0.1`): сайт `:443` → gateway:8080, S3 `:9443` → storage:9000 (Host/path сохранены — SigV4-подписи не ломаются); Gateway и S3 остаются loopback-only. Режимы `TLS_MODE`: `lan` (дефолт) — `tls internal`, **без HSTS**; `prod` — Let's Encrypt (`ACME_EMAIL`), HSTS, сайт и S3 на `:443` (SNI-роутинг). Корневой сертификат стабилен между пересозданиями контейнера (том `caddydata`), установка на клиентах — README. Сеть `app-network` закреплена за `172.28.0.0/16` (ipam в `infra/compose.yml`), Caddy — за фиксированным IP `172.28.0.10`; Gateway получает `KNOWN_PROXIES: 172.28.0.10` (точный IP, не подсеть — хост через bridge-адрес `172.28.0.1` не может подделывать ключ rate limiting; проверено live: поддельный XFF от хоста игнорируется). Найденные и исправленные в шаге дефекты Gateway: (1) Kestrel на .NET 10 представляет IPv4-пиров как IPv4-mapped IPv6 (`::ffff:172.28.0.10`) — точное сравнение `IPAddress` не считало их равными, и `KNOWN_PROXIES` молча не работал; `TrustedProxyClientKeyResolver` теперь канонизирует адреса (`MapToIPv4`) — 4 регрессионных теста; (2) дефолтный clock `SlidingWindowCounter` брал `Environment.TickCount64` (мс) как ticks (100 нс): окно «60 с» было ~7 дней, на хостах с меньшим аптаймом бакет залипал в 429 до рестарта; исправлено (`× TimeSpan.TicksPerMillisecond`) + тест с реальными часами. E2E: `make e2e-https` — одноразовый стенд, полный прогон через Caddy + `e2e/https-viewer.spec.ts` (проскипится в plain `make e2e`); доверие CA без установки в хост: Chromium — SPKI-список (Caddy предъявляет [leaf, intermediate], в список идёт intermediate), Node — `NODE_EXTRA_CA_CERTS`. Результаты: `make e2e-https` 30/30, `make e2e` 29 passed + 1 skipped, Gateway-тесты 54/54.
+
+(с шага 4.0) Сеть и IP Caddy параметризованы: `app-network` — `${APP_NETWORK_SUBNET}` (дефолт `172.28.0.0/16`), Caddy и `KNOWN_PROXIES` Gateway — `${APP_NETWORK_CADDY_IP}` (дефолт `172.28.0.10`, `infra/compose.https.yml`). Одноразовые E2E-стенды (`make e2e` / `make e2e-https`) поднимаются на отдельных /16 (`172.29.0.0/16` / `172.30.0.0/16`, Caddy `172.30.0.10`), поэтому работают **параллельно** с основным стеком без `make down` (ранее Docker отказывался создавать их сеть: «Pool overlaps with other one on this address space»).
 
 (с шага 3c.1a) Rate limiting входа на Gateway (`AuthRateLimitMiddleware` + `SlidingWindowCounter`, ADR 0011 §6.2): `POST /api/auth/login` и `POST /api/auth/register` — скользящее окно, по умолчанию 10 запросов на 60 с на клиента, превышение → `429` ProblemDetails + `Retry-After`. Конфиг: env `RATE_LIMIT_REQUESTS_PER_MINUTE`, `RATE_LIMIT_WINDOW_SECONDS`, `KNOWN_PROXIES` (IP), `KNOWN_NETWORKS` (CIDR) — по умолчанию 10/60 и пустые списки; `X-Forwarded-For` учитывается только если socket peer — доверенный прокси. Middleware стоит до OriginCheck (запросы с чужим Origin тоже расходуют лимит). Тесты: Gateway-тесты (429 + `Retry-After`, независимость ключей, другие маршруты не ограничиваются, XFF-логика, fail-fast на невалидном `KNOWN_*`) + живой прогон (`make up`: 10×401 + 429; `RATE_LIMIT_REQUESTS_PER_MINUTE=100`: 11 запросов без 429; E2E 4/4 с дефолтным лимитом). Dev-профиль: Vite-контейнер работает под `UID:GID` хоста, `node_modules` — в именованном томе `vite-node-modules` (one-shot `vite-node-modules-init` делает `chown`), `HOME=/tmp` — в `frontend/` нет root-файлов (проверено: `make up-dev`, `make down`, `find frontend -user root` → 0).
 
@@ -380,3 +384,25 @@ make test               # Gateway-тесты (dotnet test, .NET 10)
 | Предупреждений (уник.) | 7 | 7 (новых нет) |
 
 Валидация (всё зелёное): `make test` (сборка монолита + 60 Gateway-тестов), `make up` (health 200, маршрутизация проверена живым), `make check-prod` (PASS), `make e2e` (31 passed), `make e2e-https` (33 passed, включая редирект с сохранением origin/порта через Caddy).
+
+## 14. Гигиена и подготовка к Фазе 4 (шаг 4.0, 2026-11-26)
+
+### 14.1 Whitelist загрузок — из конфигурации, единый источник
+
+Whitelist расширений загрузки теперь задаётся переменной `ALLOWED_UPLOAD_EXTENSIONS` (дефолт `.glb`, в `infra/env/.env.example`). Единый источник — `UploadOptions.AllowedExtensions`: его связывает `Program.cs` (`ParseAllowedExtensions`: нормализация — точка/регистр/дубли), из него читает **и** серверная валидация (`FileStorageService`), **и** публичный `/api/config` (`ConfigApiController`). SPA и сервер не могут расходятся: SPA принимает ровно то, что примет сервер. Исторический хардкод (`{.stl,.obj,.step,.stp,.glb}` в `FileStorageService.AllowedExtensions` и `SpaUploadExtensions = [".glb"]` в `ConfigApiController`) удалён. Сервер отклоняет чужое расширение `400` с сообщением `Поддерживаются только файлы: <список>.` **До** проверки GLB-заголовка и записи в S3/БД. Дефолт `.glb` сужает whitelist до вьюера SPA (ADR 0015).
+
+### 14.2 Мёртвый код (TD-7, TD-10)
+
+Удалено: поле `AccountService._fileStorageService` (не инициализировано, не использовано — CS8618/CS0169), метод `AccountService.DeleteAccountAsync(FileUploadViewModel)`, `Models/ViewModels/FileUploadViewModel.cs`, зависимость `System.Reactive` (6.0.1) из `LoginAndReg.csproj`. Подтверждено поиском по репозиторию (ссылок нет) и сборкой. Предупреждения сборки: 7 → 5 (остальные — pre-existing CS8618 в `RegistrationViewModel`/`LoginViewModel` и CS0618 в `AccountService`).
+
+### 14.3 Gateway `/health/ready` — строгий прогон
+
+`UpstreamHealthCheck` пробирует монолит по `GET /api/health` (не корню `/`) и считает upstream готовым **только** при `HTTP 200`: 404/5xx → `503` (`Upstream /api/health returned <status>.`), недоступность (connection error/timeout) → `503` (`Upstream is not reachable.`). URL строится через `GetLeftPart(UriPartial.Path).TrimEnd('/') + "/api/health"` (без двойного слеша). Это закрыло слепое пятно 3d.2: старый прогон корня `/` трактовал любой статус <500 (включая 404) как «достигнуто», маскируя то, что весь `/api/**` отдавал 404. `/health/live` не тронут (только сам Gateway). Тесты: расширен `StubUpstream.SetStatus(path, status)` + `Health_ready_returns_503_when_api_health_returns_404`; Gateway-тесты 62/62.
+
+### 14.4 E2E/HTTPS-стенды параллельно основному стеку
+
+Сеть `app-network` и IP Caddy параметризованы: `APP_NETWORK_SUBNET` (дефолт `172.28.0.0/16`) и `APP_NETWORK_CADDY_IP` (дефолт `172.28.0.10`, идёт и в `KNOWN_PROXIES` Gateway). Makefile поднимает одноразовые стенды на отдельных /16: `e2e` — `172.29.0.0/16`, `e2e-https` — `172.30.0.0/16` (Caddy `172.30.0.10`). Основной стек и любой E2E-стенд живут одновременно — `make down` перед `make e2e`/`make e2e-https` больше не нужен (ранее: «Pool overlaps with other one on this address space»). E2E-тест `e2e/viewer.spec.ts`: сценарий «non-GLB показывает уведомление» заменён на «server-side отказ `.stl` → 400» (через upload недостижимо, §14.1).
+
+### 14.5 Валидация
+
+Всё зелёное: `make test` (сборка монолита, 5 предупреждений pre-existing; Gateway 62/62), `make up` (`/health/live` 200, `/health/ready` 200, `/api/health` 200, `/api/config` `allowedUploadExtensions: [".glb"]`), живой smoke: `.stl`/`.step` → 400 `Поддерживаются только файлы: .glb.`, валидный `.glb` → 200; `make e2e` при поднятом основном стеке (31 passed + 2 skipped, без pool overlap), `make e2e-https` при поднятом основном стеке (33 passed), `make check-prod` (PASS).
