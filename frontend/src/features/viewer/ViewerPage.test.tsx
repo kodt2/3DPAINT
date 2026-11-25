@@ -94,6 +94,47 @@ describe('ViewerPage', () => {
     expect(loadGlbMock).toHaveBeenCalledTimes(1);
   });
 
+  it('shows a friendly error for a compressed-file decode failure', async () => {
+    getModelMock.mockResolvedValue(detail('cube.glb', 'http://s3/dl?sig=a'));
+    loadGlbMock.mockRejectedValue(new GlbLoadError('DRACO decode failed', 'compression'));
+
+    renderPage();
+
+    expect(
+      await screen.findByText(
+        'Не удалось декодировать сжатые данные файла (Draco/Meshopt/KTX2). Файл повреждён.',
+      ),
+    ).toBeTruthy();
+  });
+
+  it('names the unsupported glTF extension in the error', async () => {
+    getModelMock.mockResolvedValue(detail('cube.glb', 'http://s3/dl?sig=a'));
+    loadGlbMock.mockRejectedValue(
+      new GlbLoadError('file requires a glTF extension', 'unsupported-extension', 'FOO_baz'),
+    );
+
+    renderPage();
+
+    expect(
+      await screen.findByText(
+        'Файл использует glTF-расширение, которое вьюер не поддерживает: FOO_baz.',
+      ),
+    ).toBeTruthy();
+  });
+
+  it('shows a friendly error when the decode does not finish in time', async () => {
+    getModelMock.mockResolvedValue(detail('cube.glb', 'http://s3/dl?sig=a'));
+    loadGlbMock.mockRejectedValue(new GlbLoadError('decode did not finish', 'decode-timeout'));
+
+    renderPage();
+
+    expect(
+      await screen.findByText(
+        'Декодирование файла не завершилось за 60 с. Попробуйте ещё раз или проверьте файл.',
+      ),
+    ).toBeTruthy();
+  });
+
   it('refetches the DTO once when the presigned URL fails, then loads', async () => {
     const firstUrl = 'http://s3/dl?sig=expired';
     const secondUrl = 'http://s3/dl?sig=fresh';
