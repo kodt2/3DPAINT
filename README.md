@@ -71,14 +71,17 @@ make up   # = docker compose -f infra/compose.yml -f infra/compose.override.yml 
 | `/api/**` | монолит (JSON API) |
 | `/assets/**` | frontend (hashed-ассеты сборки) |
 | `/spa/**` | frontend (префикс снимается, SPA-fallback) |
-| всё остальное | монолит (Razor-страницы, статика) |
+| `/` (GET/HEAD) | 302 → `/spa/` |
+| `/Home/**`, `/Account/**` (GET/HEAD) | 302 → `/spa/` (старые Razor-страницы, шаг 3d.2) |
+| всё остальное | 404 от Gateway (без catch-all, шаг 3d.2) |
 
 SPA доступен по `http://localhost:${WEB_PORT}/spa/`: `/spa/login`,
 `/spa/register`, защищённый `/spa/library` (с шага 3c.2: список моделей,
 presigned-превью, пагинация, удаление с подтверждением; с шага 3c.4:
 экран загрузки) и `/spa/models/:id` — 3D-вьюер (с шага 3c.3).
-Старые Razor-страницы остаются на прежних URL (`/`, `/Account/Auth`,
-`/Home/Index`).
+Razor-интерфейс удалён (шаг 3d.2): корень `/` и старые пути `/Home/**`,
+`/Account/**` редиректят на `/spa/` (302); неизвестные пути — 404 от
+Gateway (catch-all в монолит убран).
 
 **Библиотека (с шага 3c.2, ADR 0013).** SPA ходит в новый JSON-эндпоинт
 монолита `/api/models` (`GET` список с `page`/`pageSize` 1..100, `GET`/{id}
