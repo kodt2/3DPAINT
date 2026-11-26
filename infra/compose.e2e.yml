@@ -1,8 +1,16 @@
-# E2E stand only (Makefile `e2e`): expose the monolith directly on
-# E2E_WEB_PORT so the upload-limit test can hit it without the Gateway and
-# verify that the monolith enforces MAX_UPLOAD_BYTES on its own.
+# E2E stand only (Makefile `e2e`):
+#  - expose the monolith directly on E2E_WEB_PORT so the upload-limit test can
+#    hit it without the Gateway and verify that the monolith enforces
+#    MAX_UPLOAD_BYTES on its own;
+#  - expose the Auth service directly on E2E_AUTH_PORT so the step 4.1 contract
+#    (register/login/me/refresh-cookie, JWKS, /health) can be verified end to
+#    end without a Gateway route (the Gateway does not route to Auth yet,
+#    step 4.2+). The main/dev/prod stacks never publish the Auth port.
 # Never used by the main or dev stacks.
 services:
   web:
     ports:
       - "${E2E_WEB_PORT:-18081}:8080"
+  auth:
+    ports:
+      - "${E2E_AUTH_PORT:-18095}:8080"

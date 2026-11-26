@@ -10,6 +10,9 @@
 #      loopback-only ports.
 #   2. Monolith: the `web` service publishes no ports in the production
 #      profile (the only exception is the e2e stand, infra/compose.e2e.yml).
+#   2b. Auth (step 4.1, ADR 0018): the `auth` service publishes no ports in the
+#      production profile — it is internal only (the e2e stand is the only
+#      exception, infra/compose.e2e.yml).
 #   3. Origins: no dev/e2e origins (Vite 5173, e2e 18090) in PUBLIC_ORIGIN or
 #      S3_CORS_ORIGINS.
 #   4. TLS_MODE=prod: PUBLIC_ORIGIN and S3_CORS_ORIGINS must not contain
@@ -128,6 +131,16 @@ if [[ "$WEB_PORTS" == "0" ]]; then
   ok "monolith (web) publishes no ports in the production profile"
 else
   bad "monolith (web) publishes $WEB_PORTS port(s) in the production profile"
+fi
+
+# --- 2b. Auth (step 4.1) must not publish ports in the production profile ----
+# The Auth service is internal-only (ADR 0018): the e2e stand
+# (infra/compose.e2e.yml) is the only place that may expose it directly.
+AUTH_PORTS="$(printf '%s' "$CONFIG_JSON" | jq '.services.auth.ports // [] | length')"
+if [[ "$AUTH_PORTS" == "0" ]]; then
+  ok "auth (step 4.1) publishes no ports in the production profile (internal only)"
+else
+  bad "auth publishes $AUTH_PORTS port(s) in the production profile (internal only, ADR 0018)"
 fi
 
 # --- Extract resolved origin values -----------------------------------------
