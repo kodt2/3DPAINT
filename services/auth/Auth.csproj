@@ -1,0 +1,53 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <!-- New services target .NET 10 LTS (ADR 0012). The legacy monolith stays
+         on net8.0 until it is retired (ADR 0012). -->
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- New code builds with warnings as errors (AGENTS.md §5). -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <RootNamespace>Auth</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The tests project lives in a subfolder; keep it out of the web project's glob. -->
+    <Compile Remove="tests/**" />
+    <Content Remove="tests/**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Identity on EF Core + PostgreSQL: users, roles and the refresh-token
+         table (ADR 0018). Each service owns its own DbContext (AGENTS.md §5). -->
+    <PackageReference Include="Microsoft.AspNetCore.Identity.EntityFrameworkCore" Version="10.0.0" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.0" />
+    <!-- RS256 access tokens (sign) and their validation for GET /api/me (verify). -->
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.0" />
+    <!-- /health/ready must reflect the DB the service actually depends on. -->
+    <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" Version="10.0.0" />
+    <!-- Migrations are generated/applied by the one-shot migrate container
+         (dotnet ef), not at service start (step 4.1, ADR 0018). -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.0">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <!-- OpenAPI document (Development only): the SPA client is generated from it.
+         Same generator as the monolith so the auth types stay comparable. -->
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="7.3.0" />
+    <!-- Pin the patched .NET 10 build of the crypto PKCS package that Npgsql
+         pulls transitively (the 9.0.0 version has known advisories; the net10
+         shared-framework build is patched). -->
+    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.15" />
+    <!-- Structured logs (AGENTS.md §5). -->
+    <PackageReference Include="Serilog.AspNetCore" Version="8.0.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="appsettings.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>

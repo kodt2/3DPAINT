@@ -1,0 +1,168 @@
+using Auth.Entities;
+using Auth.Models;
+using Auth.Options;
+using Auth.Security;
+using Auth.Services;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
+
+namespace Auth.Controllers;
+
+/// <summary>
+/// JSON auth endpoints for the SPA (ADR 0011 / ADR 0018). This is the
+/// <c>/api/auth/*</c> contract the SPA consumes; the response shapes match the
+/// monolith's (login, fullName, birthDate) plus the added <c>id</c>.
+///
+/// Auth model: a "jwt" cookie (SameSite=Lax, HttpOnly, Secure) with an RS256
+/// access token, plus an http-only "rt" cookie with an opaque refresh token.
+/// Login and register log the user in immediately (the SPA has no separate
+/// session bootstrap).
+/// All endpoints are [AllowAnonymous]: login/register are public by design, and
+/// logout is an idempotent no-op when anonymous.
+/// </summary>
+[ApiController]
+[Route("api/auth")]
+[AllowAnonymous]
+public sealed class AuthController : ControllerBase
+{
+    private const string JwtCookieName = "jwt";
+
+    private readonly IAuthService _auth;
+    private readonly JwtTokenService _jwt;
+    private readonly RefreshTokenService _refresh;
+    private readonly RefreshTokenOptions _refreshOptions;
+
+    public AuthController(
+        IAuthService auth,
+        JwtTokenService jwt,
+        RefreshTokenService refresh,
+        IOptions<RefreshTokenOptions> refreshOptions)
+    {
+        _auth = auth;
+        _jwt = jwt;
+        _refresh = refresh;
+        _refreshOptions = refreshOptions.Value;
+    }
+
+    /// <summary>POST /api/auth/login — validates credentials and sets the auth cookies.</summary>
+    [HttpPost("login")]
+    [ProducesResponseType(typeof(AuthUserDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    public async Task<IActionResult> Login([FromBody] LoginRequest request, CancellationToken cancellationToken)
+    {
+        var user = await _auth.LoginAsync(request, cancellationToken);
+        if (user is null)
+        {
+            // Uniform 401 for unknown login AND wrong password (ADR 0018): the
+            // response is identical either way, so logins cannot be enumerated.
+            return Problem(
+                statusCode: StatusCodes.Status401Unauthorized,
+                title: "Unauthorized",
+                detail: PasswordPolicyOptions.LoginFailureMessage);
+        }
+
+        await IssueSessionAsync(user, cancellationToken);
+        return Ok(AuthUserDtoMap.ToDto(user));
+    }
+
+    /// <summary>
+    /// POST /api/auth/register — creates the user and logs them in. 409 when the
+    /// login is taken; 400 when the password fails the policy.
+    /// </summary>
+    [HttpPost("register")]
+    [ProducesResponseType(typeof(AuthUserDto), StatusCodes.Status201Created)]
+    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> Register([FromBody] RegisterRequest request, CancellationToken cancellationToken)
+    {
+        AuthUser user;
+        try
+        {
+            user = await _auth.RegisterAsync(request, cancellationToken);
+        }
+        catch (DuplicateLoginException ex)
+        {
+            return Conflict(new ProblemDetails
+            {
+                Title = "Conflict",
+                Status = StatusCodes.Status409Conflict,
+                Detail = ex.Message,
+            });
+        }
+        catch (WeakPasswordException ex)
+        {
+            return PasswordProblem(ex.Message);
+        }
+
+        await IssueSessionAsync(user, cancellationToken);
+        return StatusCode(StatusCodes.Status201Created, AuthUserDtoMap.ToDto(user));
+    }
+
+    /// <summary>POST /api/auth/logout — removes the auth cookies (idempotent).</summary>
+    [HttpPost("logout")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    public IActionResult Logout()
+    {
+        DeleteCookie(JwtCookieName, JwtCookieOptions());
+        DeleteCookie(RefreshTokenOptions.CookieName, RefreshCookieOptions());
+        return NoContent();
+    }
+
+    // Expire the cookie: Max-Age=0 is the standard deletion signal, and the same
+    // Path/Secure/SameSite flags as when it was set, so the browser matches it.
+    // (Response.Cookies.Delete only sets Expires and drops MaxAge, which some
+    // browsers ignore — so we Append an empty value with Max-Age=0 directly.)
+    private void DeleteCookie(string name, CookieOptions options)
+    {
+        options.MaxAge = TimeSpan.Zero;
+        options.Expires = DateTime.MinValue;
+        Response.Cookies.Append(name, string.Empty, options);
+    }
+
+    /// <summary>
+    /// Sets the RS256 access-token cookie and issues an opaque refresh token in
+    /// the http-only "rt" cookie (step 4.1; consumed by /refresh in step 4.2).
+    /// </summary>
+    private async Task IssueSessionAsync(AuthUser user, CancellationToken cancellationToken)
+    {
+        var accessToken = _jwt.CreateAccessToken(user.Id, user.UserName!);
+        Response.Cookies.Append(JwtCookieName, accessToken, JwtCookieOptions());
+
+        var rawRefresh = await _refresh.CreateForUserAsync(user.Id, cancellationToken);
+        Response.Cookies.Append(RefreshTokenOptions.CookieName, rawRefresh, RefreshCookieOptions());
+    }
+
+    // Same options as the monolith's AuthCookie (ADR 0011): the browser relies on
+    // the cookie, so the SPA client and the auth service must agree on these.
+    private static CookieOptions JwtCookieOptions() => new()
+    {
+        HttpOnly = true,
+        Secure = true,
+        SameSite = SameSiteMode.Lax,
+        Path = "/",
+    };
+
+    // The refresh token is only needed at the auth endpoints, so its cookie is
+    // path-restricted (never sent to /spa, /assets or the monolith's routes).
+    private CookieOptions RefreshCookieOptions() => new()
+    {
+        HttpOnly = true,
+        Secure = true,
+        SameSite = SameSiteMode.Lax,
+        Path = _refreshOptions.CookiePath,
+    };
+
+    private static IActionResult PasswordProblem(string message)
+    {
+        var details = new ValidationProblemDetails(
+                new Dictionary<string, string[]> { ["Password"] = [message] })
+        {
+            Title = "One or more validation errors occurred.",
+            Status = StatusCodes.Status400BadRequest,
+            Type = "https://tools.ietf.org/html/rfc9110#section-15.5.1",
+        };
+        return new BadRequestObjectResult(details);
+    }
+}
