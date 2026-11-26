@@ -63,6 +63,49 @@ public sealed class AuthApiTests
         return await client.SendAsync(request);
     }
 
+    /// <summary>
+    /// Parses the <c>errors</c> map of a ValidationProblemDetails body (the
+    /// monolith-compatible 400 shape with DataAnnotations messages).
+    /// </summary>
+    private static async Task<Dictionary<string, string[]>> ReadValidationErrors(HttpResponseMessage response)
+    {
+        var json = await response.Content.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(json);
+        if (!doc.RootElement.TryGetProperty("errors", out var errors))
+        {
+            return new Dictionary<string, string[]> { ["<missing>"] = [json] };
+        }
+
+        var result = new Dictionary<string, string[]>();
+        foreach (var property in errors.EnumerateObject())
+        {
+            result[property.Name] = property.Value.EnumerateArray().Select(e => e.GetString()!).ToArray();
+        }
+
+        return result;
+    }
+
+    /// <summary>Asserts the full canonical flag set of an auth cookie (step 4.2).</summary>
+    private static void AssertCookieAttributes(
+        string header,
+        string name,
+        string sameSite,
+        string path)
+    {
+        Assert.Contains($"{name}=", header, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("HttpOnly", header, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Secure", header, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(sameSite, header, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains($"path={path}", header, StringComparison.OrdinalIgnoreCase);
+
+        // A persistent cookie (Max-Age > 0), never a bare session cookie.
+        var match = System.Text.RegularExpressions.Regex.Match(
+            header, new @"(?i);\s*Max-Age=(\d+)");
+        Assert.True(match.Success, $"{name} has no Max-Age attribute: {header}");
+        var maxAge = long.Parse(match.Groups[1].Value);
+        Assert.True(maxAge > 0, $"{name} must be persistent (Max-Age > 0), got {maxAge}");
+    }
+
     private static string? GetSetCookieHeader(HttpResponseMessage response, string name)
     {
         // GetValues(...) throws when the header is absent; TryGetValues is safe.
@@ -166,21 +209,11 @@ public sealed class AuthApiTests
         Assert.Equal("Test User", dto.fullName);
         Assert.Equal(new DateOnly(1990, 1, 1), dto.birthDate);
 
-        // The RS256 access token is in the http-only "jwt" cookie (monolith shape).
-        var jwtCookie = GetSetCookieHeader(response, "jwt");
-        Assert.NotNull(jwtCookie);
-        Assert.Contains("HttpOnly", jwtCookie, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("Secure", jwtCookie, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("SameSite=Lax", jwtCookie, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("Path=/", jwtCookie, StringComparison.OrdinalIgnoreCase);
+        // The RS256 access token is in the http-only "jwt" cookie (monolith flags).
+        AssertCookieAttributes(GetSetCookieHeader(response, "jwt")!, "jwt", "SameSite=Lax", "/");
 
-        // The opaque refresh token is in the path-restricted "rt" cookie.
-        var rtCookie = GetSetCookieHeader(response, "rt");
-        Assert.NotNull(rtCookie);
-        Assert.Contains("HttpOnly", rtCookie, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("Secure", rtCookie, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("SameSite=Lax", rtCookie, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("Path=/api/auth", rtCookie, StringComparison.OrdinalIgnoreCase);
+        // The opaque refresh token is in the path-restricted, strict "rt" cookie.
+        AssertCookieAttributes(GetSetCookieHeader(response, "rt")!, "rt", "SameSite=Strict", "/api/auth");
 
         // The refresh token is opaque: not a JWT (no dots) and not the numeric id.
         var rtValue = GetSetCookieValue(response, "rt")!;
@@ -190,17 +223,108 @@ public sealed class AuthApiTests
     }
 
     [Fact]
+    public async Task Login_SetsBothCookies_WithTheCanonicalAttributes()
+    {
+        // The Set-Cookie flags must come from the single source of truth
+        // (AuthCookies) on every issuing endpoint, not only on register.
+        var login = UniqueLogin();
+        await Send(_factory, HttpMethod.Post, "/api/auth/register",
+            new { login, password = StrongPassword, fullName = "Cookie User", birthDate = new DateOnly(1985, 5, 20) });
+
+        var response = await Send(_factory, HttpMethod.Post, "/api/auth/login",
+            new { login, password = StrongPassword });
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        AssertCookieAttributes(GetSetCookieHeader(response, "jwt")!, "jwt", "SameSite=Lax", "/");
+        AssertCookieAttributes(GetSetCookieHeader(response, "rt")!, "rt", "SameSite=Strict", "/api/auth");
+    }
+
+    [Fact]
+    public async Task Register_MissingFullName_Returns400_WithMonolithMessage()
+    {
+        var response = await Send(
+            _factory, HttpMethod.Post, "/api/auth/register",
+            new { login = UniqueLogin(), password = StrongPassword, fullName = null, birthDate = new DateOnly(1990, 1, 1) });
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        var errors = await ReadValidationErrors(response);
+        Assert.Equal(
+            ["The FullName field is required."],
+            Assert.Contains("FullName", errors).Value);
+    }
+
+    [Fact]
+    public async Task Register_MissingBirthDate_Returns400_WithMonolithMessage()
+    {
+        var response = await Send(
+            _factory, HttpMethod.Post, "/api/auth/register",
+            new { login = UniqueLogin(), password = StrongPassword, fullName = "No Date", birthDate = null });
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        var errors = await ReadValidationErrors(response);
+        Assert.Equal(
+            ["The BirthDate field is required."],
+            Assert.Contains("BirthDate", errors).Value);
+    }
+
+    [Fact]
+    public async Task Register_BirthDateInTheFuture_Returns400()
+    {
+        foreach (var date in new[]
+                 {
+                     DateOnly.FromDateTime(DateTime.UtcNow).AddDays(1),
+                     new DateOnly(2100, 1, 1),
+                 })
+        {
+            var response = await Send(
+                _factory, HttpMethod.Post, "/api/auth/register",
+                new { login = UniqueLogin(), password = StrongPassword, fullName = "Future", birthDate = date });
+            Assert.True(
+                response.StatusCode == HttpStatusCode.BadRequest,
+                $"birthDate {date}: expected 400, got {(int)response.StatusCode}");
+        }
+    }
+
+    [Fact]
+    public async Task Register_BirthDateBefore1900_Returns400()
+    {
+        var response = await Send(
+            _factory, HttpMethod.Post, "/api/auth/register",
+            new { login = UniqueLogin(), password = StrongPassword, fullName = "Ancient", birthDate = new DateOnly(1899, 12, 31) });
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        var errors = await ReadValidationErrors(response);
+        Assert.Contains("BirthDate", errors);
+    }
+
+    [Fact]
+    public async Task Register_BirthDateBoundaries_AreAccepted()
+    {
+        // The day before today and 1900-01-01 itself are both valid.
+        var yesterday = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-1);
+        foreach (var date in new[] { yesterday, new DateOnly(1900, 1, 1) })
+        {
+            var response = await Send(
+                _factory, HttpMethod.Post, "/api/auth/register",
+                new { login = UniqueLogin(), password = StrongPassword, fullName = "Boundary", birthDate = date });
+            Assert.True(
+                response.StatusCode == HttpStatusCode.Created,
+                $"birthDate {date}: expected 201, got {(int)response.StatusCode}");
+        }
+    }
+
+    [Fact]
     public async Task Register_DuplicateLogin_Returns409()
     {
         var login = UniqueLogin();
         var first = await Send(
             _factory, HttpMethod.Post, "/api/auth/register",
-            new { login, password = StrongPassword });
+            new { login, password = StrongPassword, fullName = "Dup", birthDate = new DateOnly(1990, 1, 1) });
         Assert.Equal(HttpStatusCode.Created, first.StatusCode);
 
         var second = await Send(
             _factory, HttpMethod.Post, "/api/auth/register",
-            new { login, password = StrongPassword });
+            new { login, password = StrongPassword, fullName = "Dup", birthDate = new DateOnly(1990, 1, 1) });
         Assert.Equal(HttpStatusCode.Conflict, second.StatusCode);
     }
 
@@ -230,7 +354,7 @@ public sealed class AuthApiTests
     {
         var login = UniqueLogin();
         await Send(_factory, HttpMethod.Post, "/api/auth/register",
-            new { login, password = StrongPassword });
+            new { login, password = StrongPassword, fullName = "Login User", birthDate = new DateOnly(1990, 1, 1) });
 
         var response = await Send(_factory, HttpMethod.Post, "/api/auth/login",
             new { login, password = StrongPassword });
@@ -247,7 +371,7 @@ public sealed class AuthApiTests
     {
         var login = UniqueLogin();
         await Send(_factory, HttpMethod.Post, "/api/auth/register",
-            new { login, password = StrongPassword });
+            new { login, password = StrongPassword, fullName = "Wrong Pw", birthDate = new DateOnly(1990, 1, 1) });
 
         var response = await Send(_factory, HttpMethod.Post, "/api/auth/login",
             new { login, password = "Wr0ng-Passw0rd!99" });
@@ -278,7 +402,7 @@ public sealed class AuthApiTests
         var login = UniqueLogin();
         var register = await Send(
             _factory, HttpMethod.Post, "/api/auth/register",
-            new { login, password = StrongPassword, fullName = "Me User" });
+            new { login, password = StrongPassword, fullName = "Me User", birthDate = new DateOnly(1990, 1, 1) });
         var jwt = GetSetCookieValue(register, "jwt")!;
 
         var response = await Send(_factory, HttpMethod.Get, "/api/me", cookie: $"jwt={jwt}");
@@ -302,7 +426,7 @@ public sealed class AuthApiTests
         var login = UniqueLogin();
         var register = await Send(
             _factory, HttpMethod.Post, "/api/auth/register",
-            new { login, password = StrongPassword });
+            new { login, password = StrongPassword, fullName = "Tamper", birthDate = new DateOnly(1990, 1, 1) });
         var jwt = GetSetCookieValue(register, "jwt")!;
 
         // Tamper with the signature (last segment): flip a full 6-bit group in
@@ -333,7 +457,7 @@ public sealed class AuthApiTests
     {
         var register = await Send(
             _factory, HttpMethod.Post, "/api/auth/register",
-            new { login = UniqueLogin(), password = StrongPassword });
+            new { login = UniqueLogin(), password = StrongPassword, fullName = "Logout", birthDate = new DateOnly(1990, 1, 1) });
         Assert.NotNull(GetSetCookieHeader(register, "jwt"));
 
         var response = await Send(_factory, HttpMethod.Post, "/api/auth/logout");
