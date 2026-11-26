@@ -154,6 +154,118 @@ services:
     networks:
       - app-network
 
+  # --- Auth Service (step 4.1, ADR 0018) ----------------------------------
+  # Standalone auth: its own PostgreSQL instance + user + database, one-shot
+  # init / keygen / migrate containers (migrations never run inside the
+  # service), RS256 signing keys in a named volume (never the image or repo).
+  # Internal only: NO published port here (the e2e stand, infra/compose.e2e.yml,
+  # exposes it directly). Not yet routed by the Gateway (step 4.2+).
+
+  auth-db:
+    # Dedicated PostgreSQL for the Auth service (its own database + user).
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: auth
+      POSTGRES_PASSWORD: ${AUTH_DB_PASSWORD}
+      POSTGRES_DB: auth
+    volumes:
+      - auth-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U auth"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    networks:
+      - app-network
+
+  # One-shot: idempotently ensure the `auth` database exists. This is the
+  # explicit db-init step (AGENTS.md) and guards a reused volume.
+  auth-initdb:
+    image: postgres:15-alpine
+    restart: "no"
+    depends_on:
+      auth-db:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${AUTH_DB_PASSWORD}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        if [ "$$(psql -h auth-db -U auth -tAc "SELECT 1 FROM pg_database WHERE datname='auth'")" != "1" ]; then
+          psql -h auth-db -U auth -c "CREATE DATABASE auth OWNER auth"
+          echo "auth-initdb: created database 'auth'"
+        else
+          echo "auth-initdb: database 'auth' already present"
+        fi
+    networks:
+      - app-network
+
+  # One-shot: generate the RS256 signing keys (current + previous) into the
+  # auth-keys volume when missing. Dev convenience — Production should provide
+  # the keys from a secret; the service fails fast if the current key is absent.
+  auth-keygen:
+    build:
+      context: ../services/auth
+    restart: "no"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      # Not used by keygen (no DB access); present so the builder's required
+      # connection-string check passes.
+      ConnectionStrings__AuthConnection: Host=localhost;Port=5432;Database=auth;Username=auth;Password=auth
+      Jwt__CurrentKeyFile: /keys/current.pem
+      Jwt__PreviousKeyFile: /keys/previous.pem
+      Jwt__RsaKeySize: "2048"
+    volumes:
+      - auth-keys:/keys
+    # The image ENTRYPOINT is [dotnet, Auth.dll]: the command is appended to it.
+    command: ["keygen"]
+    networks:
+      - app-network
+
+  # One-shot: apply the EF Core migrations and seed the default role, AFTER the
+  # database exists and BEFORE the service starts. The service itself never
+  # migrates (AGENTS.md §5).
+  auth-migrate:
+    build:
+      context: ../services/auth
+    restart: "no"
+    depends_on:
+      auth-initdb:
+        condition: service_completed_successfully
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ConnectionStrings__AuthConnection: Host=auth-db;Port=5432;Database=auth;Username=auth;Password=${AUTH_DB_PASSWORD}
+    # The image ENTRYPOINT is [dotnet, Auth.dll]: the command is appended to it.
+    command: ["migrate"]
+    networks:
+      - app-network
+
+  auth:
+    build:
+      context: ../services/auth
+    restart: unless-stopped
+    # No published ports: internal only (the e2e stand exposes it directly).
+    depends_on:
+      auth-db:
+        condition: service_healthy
+      auth-migrate:
+        condition: service_completed_successfully
+      auth-keygen:
+        condition: service_completed_successfully
+    environment:
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
+      ConnectionStrings__AuthConnection: Host=auth-db;Port=5432;Database=auth;Username=auth;Password=${AUTH_DB_PASSWORD}
+      Jwt__Issuer: ${AUTH_JWT_ISSUER:-3dpaint.auth}
+      Jwt__Audience: ${AUTH_JWT_AUDIENCE:-3dpaint}
+      Jwt__ExpiryMinutes: ${AUTH_JWT_EXPIRY_MINUTES:-15}
+      Jwt__CurrentKeyFile: /keys/current.pem
+      Jwt__PreviousKeyFile: /keys/previous.pem
+    volumes:
+      - auth-keys:/keys
+    networks:
+      - app-network
+
 networks:
   app-network:
     driver: bridge
@@ -175,3 +287,8 @@ volumes:
   # Vite/npm for the dev profile; mounted at /app/node_modules in frontend-dev
   # so the host bind mount ../frontend stays free of node_modules leftovers.
   vite-node-modules:
+  # Auth service (step 4.1): its own PostgreSQL data and the RS256 signing keys
+  # (the keys are generated into /keys by auth-keygen, never baked into the
+  # image or committed).
+  auth-db-data:
+  auth-keys:

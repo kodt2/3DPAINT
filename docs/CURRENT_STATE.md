@@ -406,3 +406,47 @@ Whitelist расширений загрузки теперь задаётся п
 ### 14.5 Валидация
 
 Всё зелёное: `make test` (сборка монолита, 5 предупреждений pre-existing; Gateway 62/62), `make up` (`/health/live` 200, `/health/ready` 200, `/api/health` 200, `/api/config` `allowedUploadExtensions: [".glb"]`), живой smoke: `.stl`/`.step` → 400 `Поддерживаются только файлы: .glb.`, валидный `.glb` → 200; `make e2e` при поднятом основном стеке (31 passed + 2 skipped, без pool overlap), `make e2e-https` при поднятом основном стеке (33 passed), `make check-prod` (PASS).
+
+## 15. Auth Service (шаг 4.1, 2026-11-26, ADR 0018)
+
+### 15.1 Сервис
+
+`services/auth` — ASP.NET Core Web API (.NET 10, ADR 0012), ASP.NET Identity (PBKDF2, стандартный хэшер), EF Core + Npgsql (своя БД `auth` и свой пользователь `auth` в `auth-db`), Serilog, OpenAPI (Swashbuckle). `TreatWarningsAsErrors`.
+
+Эндпоинты (контракты совместимы с монолитом, `AuthUserDto` + `id`):
+
+| Маршрут | Статусы | Что делает |
+|---|---|---|
+| `POST /api/auth/register` | 201/400/409 | Регистрация; пароль ≥ 10 символов и не из списка из 100 распространённых (400 по полю `Password`); дубликат логина — 409 |
+| `POST /api/auth/login` | 200/400/401 | JWT (RS256, 15 мин) в cookie `jwt` + opaque refresh в cookie `rt`; неверный логин ИЛИ пароль — один и тот же 401 `"Неверный логин или пароль"` |
+| `POST /api/auth/logout` | 204 | Стирает cookie `jwt` и `rt` (идемпотентно, аноним-безопасно) |
+| `GET /api/me` | 200/401 | Текущий пользователь (user id из `sub`); реализован `/api/me` — как у монолита и SPA (не `/api/auth/me`) |
+| `GET /.well-known/jwks.json` | 200 | JWKS: RSA, `use: sig`, `alg: RS256`, `kid` = JWK Thumbprint (RFC 7638); current + previous ключи |
+| `/health/live`, `/health/ready` | 200/503 | ready проверяет БД |
+
+### 15.2 Ключи RS256
+
+- PEM PKCS#8 (2048 бит), два файла: `Jwt:CurrentKeyFile` (обязателен) + `Jwt:PreviousKeyFile` (опционален) в named volume `auth-keys` (0600).
+- **Development**: if-missing — генерация; one-shot `auth-keygen` (`command: ["keygen"]`, идемпотентный) создаёт оба ключа. **Production**: fail-fast **до старта HTTP** при отсутствии current-ключа (проверено).
+- Ротация: оператор ставит новый ключ в `current.pem`, старый — в `previous.pem`; JWKS публикует оба, валидация — любым, подпись — только current.
+- Identity токена: `AUTH_JWT_ISSUER`/`AUTH_JWT_AUDIENCE` (дефолты `3dpaint.auth`/`3dpaint`) — **независимы** от монолитных `JWT_ISSUER`/`JWT_AUDIENCE` (в `.env.example`).
+
+### 15.3 Refresh-токены (часть 4.1)
+
+Opaque-токен (32 байта, base64url), в БД — только SHA-256 хэш (таблица `RefreshTokens` — в миграции `InitialCreate`). Cookie `rt` (`HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/api/auth`) выдаётся на логине. `POST /api/auth/refresh`, ротация, детект повторного использования, lockout, cleanup — **4.2**.
+
+### 15.4 Компоновка
+
+- `auth-db` (PostgreSQL 15, свой volume `auth-db-data`, пароль — `AUTH_DB_PASSWORD` из env) → one-shot `auth-initdb` (пользователь/БД) → one-shot `auth-migrate` (миграции + seed роли `User`) → `auth`. Сервис **не** мигрирует при старте (AGENTS.md §5).
+- Auth **без опубликованных портов** в main/dev/prod (проверка `check-prod-stack.sh` §2b); прямой порт — только e2e-стенд (`E2E_AUTH_PORT`, дефолт 18095). Gateway-маршрут `/api/auth/**` → Auth — **4.2**.
+- Compose: `auth-keygen`/`auth-migrate`/`auth` + `auth-db` + volume `auth-keys` (в `infra/compose.yml`).
+
+### 15.5 Тесты (стратегия — ADR 0018 §4: compose-стенд, без Testcontainers)
+
+`infra/compose.auth-test.yml` — одноразовый PostgreSQL (`auth-test-db`, volume, сеть `172.31.0.0/16`) + `dotnet/sdk:10.0`. `make test-auth`: build → `migrate` → `keygen` (оба ключа) → `dotnet test` → **всегда** `down -v` (после — ни контейнеров, ни сетей, ни volumes). 15 интеграционных тестов (register/login/me/logout/JWKS/подмена-подписи) — 15/15.
+
+Найдено при отладке (.NET 10, ADR 0018 §6): `AddIdentity` ставит `DefaultAuthenticateScheme = "Identity.Application"` — стандартный auth-middleware аутентифицировал cookie-схемой Identity, а не `Bearer` (валидный JWT → 401). Фикс — явные `Default*Scheme = Bearer` после `AddIdentity`; регрессию держит `Me_WithValidToken_Returns200`.
+
+### 15.6 Валидация
+
+Всё зелёное: `make test-auth` (15/15), Release-сборка (0 предупреждений), `make up` (auth-цепочка up, health 200, портов наружу нет), живой smoke (register → login → me → JWKS → logout → 401), `gen:api`-совместимость (коды ответов 4 путей идентичны монолиту, `AuthUserDto` +`id`), production fail-fast без ключа, `make check-prod` (PASS), `make e2e` (31 passed + 2 skipped), `make e2e-https` (33 passed), секрет-скан диффа (чисто).
