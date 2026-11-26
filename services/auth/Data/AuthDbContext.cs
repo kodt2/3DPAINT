@@ -30,6 +30,8 @@ public class AuthDbContext : IdentityDbContext<AuthUser, IdentityRole<int>, int>
             token.Property(t => t.TokenHash).HasMaxLength(64).IsRequired();
             token.HasIndex(t => t.TokenHash).IsUnique();
             token.HasIndex(t => new { t.UserId, t.RevokedAt });
+            // Family-wide operations (reuse revocation) scan by family.
+            token.HasIndex(t => t.FamilyId);
             token.HasIndex(t => t.ExpiresAt);
             token.HasOne(t => t.User)
                 .WithMany()

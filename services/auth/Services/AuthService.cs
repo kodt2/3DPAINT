@@ -64,7 +64,24 @@ public sealed class AuthService : IAuthService
             return null;
         }
 
-        return await _userManager.CheckPasswordAsync(user, request.Password!) ? user : null;
+        // Lockout (step 4.2, ADR 0018): 5 failures lock the account for 15
+        // minutes. A locked account returns the SAME 401 body as a wrong
+        // password, so the state is not distinguishable from the response.
+        if (user.LockoutEnabled && user.LockoutEnd > DateTimeOffset.UtcNow)
+        {
+            return null;
+        }
+
+        if (!await _userManager.CheckPasswordAsync(user, request.Password!))
+        {
+            // Identity's failure counter (AccessFailedAttempts) drives the
+            // automatic lockout; the count is reset on a successful login.
+            await _userManager.AccessFailedAsync(user);
+            return null;
+        }
+
+        await _userManager.ResetAccessFailedCountAsync(user);
+        return user;
     }
 
     public async Task<AuthUser?> GetByIdAsync(int id, CancellationToken ct)

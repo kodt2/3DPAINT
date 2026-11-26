@@ -110,6 +110,9 @@ namespace Auth.Migrations
                     b.Property<Guid>("FamilyId")
                         .HasColumnType("uuid");
 
+                    b.Property<DateTime?>("ReplacedAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<string>("ReplacedByHash")
                         .HasColumnType("text");
 
@@ -127,6 +130,8 @@ namespace Auth.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("ExpiresAt");
+
+                    b.HasIndex("FamilyId");
 
                     b.HasIndex("TokenHash")
                         .IsUnique();

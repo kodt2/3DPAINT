@@ -26,23 +26,24 @@ namespace Auth.Controllers;
 [AllowAnonymous]
 public sealed class AuthController : ControllerBase
 {
-    private const string JwtCookieName = "jwt";
-
     private readonly IAuthService _auth;
     private readonly JwtTokenService _jwt;
     private readonly RefreshTokenService _refresh;
     private readonly RefreshTokenOptions _refreshOptions;
+    private readonly TimeSpan _jwtLifetime;
 
     public AuthController(
         IAuthService auth,
         JwtTokenService jwt,
         RefreshTokenService refresh,
-        IOptions<RefreshTokenOptions> refreshOptions)
+        IOptions<RefreshTokenOptions> refreshOptions,
+        IOptions<JwtOptions> jwtOptions)
     {
         _auth = auth;
         _jwt = jwt;
         _refresh = refresh;
         _refreshOptions = refreshOptions.Value;
+        _jwtLifetime = TimeSpan.FromMinutes(jwtOptions.Value.ExpiryMinutes);
     }
 
     /// <summary>POST /api/auth/login — validates credentials and sets the auth cookies.</summary>
@@ -100,13 +101,56 @@ public sealed class AuthController : ControllerBase
         return StatusCode(StatusCodes.Status201Created, AuthUserDtoMap.ToDto(user));
     }
 
-    /// <summary>POST /api/auth/logout — removes the auth cookies (idempotent).</summary>
+    /// <summary>
+    /// POST /api/auth/refresh — rotates the session: the <c>rt</c> cookie is
+    /// consumed atomically and a fresh access + refresh pair is issued. Every
+    /// failure (missing/garbage/expired/revoked/reused token) is the same 401
+    /// ProblemDetails, so the SPA simply falls back to the login screen.
+    /// </summary>
+    [HttpPost("refresh")]
+    [ProducesResponseType(typeof(AuthUserDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    public async Task<IActionResult> Refresh(CancellationToken cancellationToken)
+    {
+        var raw = Request.Cookies[AuthCookies.RefreshName];
+        if (string.IsNullOrEmpty(raw))
+        {
+            return SessionExpired();
+        }
+
+        var result = await _refresh.RotateAsync(raw, cancellationToken);
+        if (result.Outcome is not RefreshRotationOutcome.Success || result.User is null)
+        {
+            return SessionExpired();
+        }
+
+        var accessToken = _jwt.CreateAccessToken(result.User.Id, result.User.UserName!);
+        Response.Cookies.Append(AuthCookies.JwtName, accessToken, AuthCookies.Jwt(_jwtLifetime));
+        Response.Cookies.Append(
+            AuthCookies.RefreshName,
+            result.NewRawToken!,
+            AuthCookies.Refresh(_refreshOptions.CookiePath, TimeSpan.FromDays(_refreshOptions.ExpiryDays)));
+
+        return Ok(AuthUserDtoMap.ToDto(result.User));
+    }
+
+    /// <summary>
+    /// POST /api/auth/logout — revokes the refresh-token family and removes the
+    /// auth cookies (idempotent). Revoking the family makes any <c>rt</c> the
+    /// client still holds unusable, not just the cookies the client deletes.
+    /// </summary>
     [HttpPost("logout")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
-    public IActionResult Logout()
+    public async Task<IActionResult> Logout(CancellationToken cancellationToken)
     {
-        DeleteCookie(JwtCookieName, JwtCookieOptions());
-        DeleteCookie(RefreshTokenOptions.CookieName, RefreshCookieOptions());
+        var raw = Request.Cookies[AuthCookies.RefreshName];
+        if (!string.IsNullOrEmpty(raw))
+        {
+            await _refresh.RevokeFamilyByTokenAsync(raw, cancellationToken);
+        }
+
+        DeleteCookie(AuthCookies.JwtName, AuthCookies.DeletedJwt());
+        DeleteCookie(AuthCookies.RefreshName, AuthCookies.DeletedRefresh(_refreshOptions.CookiePath));
         return NoContent();
     }
 
@@ -123,36 +167,31 @@ public sealed class AuthController : ControllerBase
 
     /// <summary>
     /// Sets the RS256 access-token cookie and issues an opaque refresh token in
-    /// the http-only "rt" cookie (step 4.1; consumed by /refresh in step 4.2).
+    /// the http-only "rt" cookie. All cookie attributes come from AuthCookies
+    /// (step 4.2), the single source of truth for the auth cookie flags.
     /// </summary>
     private async Task IssueSessionAsync(AuthUser user, CancellationToken cancellationToken)
     {
         var accessToken = _jwt.CreateAccessToken(user.Id, user.UserName!);
-        Response.Cookies.Append(JwtCookieName, accessToken, JwtCookieOptions());
+        Response.Cookies.Append(AuthCookies.JwtName, accessToken, AuthCookies.Jwt(_jwtLifetime));
 
         var rawRefresh = await _refresh.CreateForUserAsync(user.Id, cancellationToken);
-        Response.Cookies.Append(RefreshTokenOptions.CookieName, rawRefresh, RefreshCookieOptions());
+        Response.Cookies.Append(
+            AuthCookies.RefreshName,
+            rawRefresh,
+            AuthCookies.Refresh(_refreshOptions.CookiePath, TimeSpan.FromDays(_refreshOptions.ExpiryDays)));
     }
 
-    // Same options as the monolith's AuthCookie (ADR 0011): the browser relies on
-    // the cookie, so the SPA client and the auth service must agree on these.
-    private static CookieOptions JwtCookieOptions() => new()
-    {
-        HttpOnly = true,
-        Secure = true,
-        SameSite = SameSiteMode.Lax,
-        Path = "/",
-    };
-
-    // The refresh token is only needed at the auth endpoints, so its cookie is
-    // path-restricted (never sent to /spa, /assets or the monolith's routes).
-    private CookieOptions RefreshCookieOptions() => new()
-    {
-        HttpOnly = true,
-        Secure = true,
-        SameSite = SameSiteMode.Lax,
-        Path = _refreshOptions.CookiePath,
-    };
+    /// <summary>
+    /// The uniform 401 for every /refresh failure. One message on purpose:
+    /// the client (and an attacker) must not be able to tell which kind of
+    /// token problem happened (ADR 0018).
+    /// </summary>
+    private IActionResult SessionExpired()
+        => Problem(
+            statusCode: StatusCodes.Status401Unauthorized,
+            title: "Unauthorized",
+            detail: "Сессия истекла. Войдите снова.");
 
     private static IActionResult PasswordProblem(string message)
     {
