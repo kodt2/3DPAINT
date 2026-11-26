@@ -63,8 +63,11 @@ services:
       app-network:
         # Fixed address: the gateway trusts exactly this IP for
         # X-Forwarded-For (see KNOWN_PROXIES below). Do not change it
-        # without updating the gateway environment.
-        ipv4_address: 172.28.0.10
+        # without updating the gateway environment. Parameterized (step 4.0)
+        # so a throwaway HTTPS stand can pin Caddy to a different /16 (the
+        # Makefile passes APP_NETWORK_CADDY_IP together with the matching
+        # APP_NETWORK_SUBNET); the main HTTPS stand keeps 172.28.0.10.
+        ipv4_address: ${APP_NETWORK_CADDY_IP:-172.28.0.10}
 
   gateway:
     environment:
@@ -72,7 +75,7 @@ services:
       # ADR 0011 §6.2): Caddy's fixed address on the app-network. Exact IP,
       # not a subnet — host traffic arrives at the gateway from the bridge
       # address (172.28.0.1) and its XFF headers must be ignored.
-      KNOWN_PROXIES: 172.28.0.10
+      KNOWN_PROXIES: ${APP_NETWORK_CADDY_IP:-172.28.0.10}
 
 volumes:
   caddydata:

@@ -33,6 +33,7 @@ E2E_MAX_UPLOAD_BYTES := 33554432
 COMPOSE_E2E := WEB_PORT=$(E2E_PORT) S3_PUBLIC_PORT=$(E2E_S3_PORT) \
     S3_FILER_PORT=$(E2E_FILER_PORT) \
     RATE_LIMIT_REQUESTS_PER_MINUTE=100 MAX_UPLOAD_BYTES=$(E2E_MAX_UPLOAD_BYTES) \
+    APP_NETWORK_SUBNET=172.29.0.0/16 \
     $(COMPOSE) -p 3dpaint-e2e -f infra/compose.e2e.yml
 E2E_DOWN := $(COMPOSE) -p 3dpaint-e2e down --volumes --remove-orphans
 
@@ -59,6 +60,7 @@ COMPOSE_E2E_HTTPS := \
     WEB_PORT=18091 S3_PUBLIC_PORT=19001 S3_FILER_PORT=18899 \
     E2E_WEB_PORT=$(E2E_HTTPS_WEB_PORT) \
     RATE_LIMIT_REQUESTS_PER_MINUTE=100 MAX_UPLOAD_BYTES=$(E2E_MAX_UPLOAD_BYTES) \
+    APP_NETWORK_SUBNET=172.30.0.0/16 APP_NETWORK_CADDY_IP=172.30.0.10 \
     $(COMPOSE) -p 3dpaint-e2e-https -f infra/compose.e2e.yml -f infra/compose.https.yml --profile https
 E2E_HTTPS_DOWN := $(COMPOSE) -p 3dpaint-e2e-https -f infra/compose.e2e.yml -f infra/compose.https.yml --profile https down --volumes --remove-orphans
 

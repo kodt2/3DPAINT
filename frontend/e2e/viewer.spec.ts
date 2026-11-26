@@ -166,40 +166,24 @@ test('another user gets "Модель не найдена" for a foreign model',
   await contextB.close();
 });
 
-test('a non-GLB model shows the notice and the download link', async ({ page }) => {
+test('a non-GLB (.stl) upload is rejected by the server', async ({ page }) => {
   const login = uniqueLogin('e2e_stl');
   await registerViaUi(page, login);
   await expect(page).toHaveURL(/\/spa\/library/);
 
-  // The monolith whitelist includes .stl; the smallest valid ASCII STL.
-  const stl = Buffer.from(
-    [
-      'solid e2e',
-      '  facet normal 0 0 1',
-      '    outer loop',
-      '      vertex 0 0 0',
-      '      vertex 1 0 0',
-      '      vertex 0 1 0',
-      '    endloop',
-      '  endfacet',
-      'endsolid e2e',
-      '',
-    ].join('\n'),
-    'utf8',
-  );
+  // Step 4.0: the upload whitelist is config-driven (.glb by default) and the
+  // monolith rejects other extensions with 400 before anything is stored, so a
+  // non-GLB model can no longer reach the viewer through an upload. (The
+  // viewer's "preview unavailable" notice is still unit-tested in
+  // ViewerPage.test.tsx for models that are not .glb.)
+  const stl = Buffer.from('solid e2e\nendsolid e2e\n', 'utf8');
   const response = await page.request.post(`${baseUrl}/api/files/upload`, {
     headers: await apiHeaders(page),
     multipart: {
       file: { name: 'tri.stl', mimeType: 'model/stl', buffer: stl },
     },
   });
-  expect(response.status()).toBe(200);
-  const model = (await response.json()) as { id: string };
-
-  await openViewer(page, model.id);
-  await expect(
-    page.getByRole('status').getByText('Просмотр 3D недоступен для формата .stl.'),
-  ).toBeVisible();
-  await expect(page.getByRole('link', { name: 'Скачать' })).toBeVisible();
-  await expect(page.locator('.viewer-canvas-wrap')).toHaveCount(0);
+  expect(response.status()).toBe(400);
+  const body = (await response.json()) as { message: string };
+  expect(body.message).toContain('.glb');
 });

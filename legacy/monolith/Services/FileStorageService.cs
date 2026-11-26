@@ -13,14 +13,10 @@ namespace LoginAndReg.Services;
 
 public class FileStorageService : IFileStorageService
 {
-    private static readonly HashSet<string> AllowedExtensions = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ".stl", ".obj", ".step", ".stp", ".glb"
-    };
-
     private readonly IMinioClient _minioClient;
     private readonly MinioOptions _options;
     private readonly long _maxUploadBytes;
+    private readonly IReadOnlyList<string> _allowedExtensions;
     private readonly AppDbContext _context;
 
     private readonly ILogger<FileStorageService> _logger;
@@ -39,6 +35,9 @@ public class FileStorageService : IFileStorageService
         _minioClient = minioClient;
         _options = options.Value;
         _maxUploadBytes = uploadOptions.Value.MaxBytes;
+        // Single source of truth shared with the public /api/config (step 4.0):
+        // the SPA and the server validate against the same extension list.
+        _allowedExtensions = uploadOptions.Value.AllowedExtensions;
         _context = appDbContext;
         _logger = logger;
     }
@@ -249,9 +248,11 @@ public class FileStorageService : IFileStorageService
         }
 
         var extension = Path.GetExtension(file.FileName);
-        if (string.IsNullOrWhiteSpace(extension) || !AllowedExtensions.Contains(extension))
+        if (string.IsNullOrWhiteSpace(extension)
+            || !_allowedExtensions.Any(e => string.Equals(e, extension, StringComparison.OrdinalIgnoreCase)))
         {
-            throw new InvalidOperationException("Поддерживаются только STL, OBJ, GLB и STEP файлы.");
+            throw new InvalidOperationException(
+                $"Поддерживаются только файлы: {string.Join(", ", _allowedExtensions)}.");
         }
 
         // The extension whitelist is not enough: a renamed corrupt file would

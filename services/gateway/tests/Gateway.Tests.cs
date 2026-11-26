@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Collections.Specialized;
 using System.Net;
 using Gateway.Middleware;
@@ -88,14 +89,45 @@ public sealed class GatewayTests : IDisposable
     }
 
     [Fact]
-    public async Task Health_ready_returns_200_when_upstream_is_available()
+    public async Task Health_ready_returns_200_when_api_health_returns_200()
     {
+        // The default stub returns 200 for /api/health, so the gateway is ready.
         using var factory = CreateFactory(_upstream.Url, _upstream.Url);
         var client = factory.CreateClient();
 
         using var response = await client.GetAsync("/health/ready");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Health_ready_returns_503_when_api_health_returns_404()
+    {
+        // The 3d.2 regression: the monolith /api surface returning 404 must NOT
+        // be considered ready. The previous status-agnostic probe (any < 500)
+        // would have marked it healthy; probing /api/health for exactly 200
+        // catches it.
+        using var badUpstream = new StubUpstream("monolith");
+        badUpstream.SetStatus("/api/health", 404);
+        using var factory = CreateFactory(badUpstream.Url, _upstream.Url);
+        var client = factory.CreateClient();
+
+        using var response = await client.GetAsync("/health/ready");
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Health_ready_returns_503_when_api_health_returns_500()
+    {
+        using var badUpstream = new StubUpstream("monolith");
+        badUpstream.SetStatus("/api/health", 500);
+        using var factory = CreateFactory(badUpstream.Url, _upstream.Url);
+        var client = factory.CreateClient();
+
+        using var response = await client.GetAsync("/health/ready");
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
     }
 
     [Fact]
@@ -1067,6 +1099,18 @@ internal sealed class StubUpstream : IDisposable
     private readonly WebApplication _app;
     private readonly string _marker;
     private readonly List<string> _requestPaths = [];
+    private readonly ConcurrentDictionary<string, (int Status, string? Body)> _pathResponses =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Makes the stub return a fixed status for the given path (used by the
+    /// /health/ready tests: e.g. /api/health -> 404 or 500). Paths without an
+    /// entry return 200 with the usual "{marker}-ok" body.
+    /// </summary>
+    public void SetStatus(string path, int status)
+    {
+        _pathResponses[path] = (status, null);
+    }
 
     public StubUpstream(string marker)
     {
@@ -1079,7 +1123,8 @@ internal sealed class StubUpstream : IDisposable
         _app = builder.Build();
         _app.Run(context =>
         {
-            _requestPaths.Add(context.Request.Path.Value ?? string.Empty);
+            var path = context.Request.Path.Value ?? string.Empty;
+            _requestPaths.Add(path);
             var collection = new NameValueCollection();
             foreach (var (key, value) in context.Request.Headers)
             {
@@ -1087,7 +1132,14 @@ internal sealed class StubUpstream : IDisposable
             }
 
             LastRequestHeaders = collection;
-            LastRequestPath = context.Request.Path.Value;
+            LastRequestPath = path;
+
+            if (_pathResponses.TryGetValue(path, out var configured))
+            {
+                context.Response.StatusCode = configured.Status;
+                return context.Response.WriteAsync(configured.Body ?? $"{_marker}-ok");
+            }
+
             return context.Response.WriteAsync($"{_marker}-ok");
         });
         _app.StartAsync().GetAwaiter().GetResult();

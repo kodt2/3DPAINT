@@ -71,6 +71,11 @@ services:
       - PUBLIC_S3_ENDPOINT=${PUBLIC_S3_ENDPOINT:-http://localhost:${S3_PUBLIC_PORT:-9000}}
       # Single upload limit shared with the Gateway (ADR 0015).
       - MaxUploadBytes=${MAX_UPLOAD_BYTES:-104857600}
+      # Accepted upload extensions (comma-separated, step 4.0). Single source
+      # of truth: the server-side validation AND the public /api/config read
+      # this same value, so the SPA and the server can never disagree. Default
+      # is .glb (the SPA viewer is GLB-only).
+      - AllowedUploadExtensions=${ALLOWED_UPLOAD_EXTENSIONS:-.glb}
     depends_on:
       - db
       - storage
@@ -157,9 +162,12 @@ networks:
     # KNOWN_PROXIES to exactly that IP, so the rate-limit client key is
     # taken from X-Forwarded-For only for connections from Caddy. The
     # values must stay in sync with infra/compose.https.yml.
+    # Parameterized (step 4.0) so the throwaway E2E/HTTPS stands can use a
+    # different /16 and run alongside the main stack without a network-pool
+    # overlap; the main stack keeps the 172.28.0.0/16 default.
     ipam:
       config:
-        - subnet: 172.28.0.0/16
+        - subnet: ${APP_NETWORK_SUBNET:-172.28.0.0/16}
 
 volumes:
   pgdata:
