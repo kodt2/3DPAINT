@@ -8,6 +8,13 @@ COMPOSE_DEV := $(COMPOSE) -f infra/compose.dev.yml
 # 127.0.0.1). The gateway/S3 keep their loopback-only ports.
 BIND_ADDR ?= 127.0.0.1
 COMPOSE_HTTPS := $(COMPOSE) -f infra/compose.https.yml --profile https
+# Auth integration test stand (step 4.1, ADR 0018 — compose-stand strategy):
+# a throwaway dedicated Postgres + the .NET test suite (xUnit +
+# WebApplicationFactory) on a private network. The stand is removed after the
+# run (volumes included), even when a test fails — no leftover containers,
+# networks or volumes. Never part of the main/dev/prod stacks.
+COMPOSE_AUTH_TEST := docker compose -p 3dpaint-auth-test -f infra/compose.auth-test.yml
+AUTH_TEST_DOWN := $(COMPOSE_AUTH_TEST) down --volumes --remove-orphans
 MONOLITH_CSPROJ := legacy/monolith/LoginAndReg.csproj
 # The legacy monolith stays on .NET 8; new services use .NET 10 (ADR 0012).
 DOTNET_SDK_8_IMG := mcr.microsoft.com/dotnet/sdk:8.0
@@ -64,7 +71,7 @@ COMPOSE_E2E_HTTPS := \
     $(COMPOSE) -p 3dpaint-e2e-https -f infra/compose.e2e.yml -f infra/compose.https.yml --profile https
 E2E_HTTPS_DOWN := $(COMPOSE) -p 3dpaint-e2e-https -f infra/compose.e2e.yml -f infra/compose.https.yml --profile https down --volumes --remove-orphans
 
-.PHONY: up up-dev down logs build test e2e e2e-https up-https down-https check-prod
+.PHONY: up up-dev down logs build test test-auth e2e e2e-https up-https down-https check-prod
 
 up: ## Build (if needed) and start the full stack
 	$(COMPOSE) up -d --build
@@ -88,6 +95,14 @@ build: ## Build stack images
 test: ## Build the monolith and run gateway tests (in a container; host SDK not required)
 	docker run --rm -v "$(CURDIR):/work" -w /work/legacy/monolith $(DOTNET_SDK_8_IMG) dotnet build
 	docker run --rm -v "$(CURDIR):/work" -w /work/services/gateway/tests $(DOTNET_SDK_10_IMG) dotnet test
+
+test-auth: ## Run the Auth service integration tests (throwaway Postgres stand, ADR 0018)
+	-@$(AUTH_TEST_DOWN) >/dev/null 2>&1
+	@echo "Running the Auth integration tests (Postgres stand)..."
+	@status=0; \
+	$(COMPOSE_AUTH_TEST) up --abort-on-container-exit --exit-code-from auth-test || status=$$?; \
+	$(AUTH_TEST_DOWN); \
+	exit $$status
 
 up-https: ## Start the stack with the Caddy TLS edge (https profile, ADR 0016)
 	$(COMPOSE_HTTPS) up -d --build

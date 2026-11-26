@@ -1,0 +1,75 @@
+# Auth integration test stand (step 4.1, ADR 0018 — compose-stand strategy).
+#
+# Runs the Auth .NET test suite (xUnit + WebApplicationFactory) against a
+# dedicated, throwaway PostgreSQL on a private network. The app runs in-process
+# (WebApplicationFactory) and connects to `auth-test-db` by name; the RSA keys
+# are generated into a temp dir (Development mode). The migrations are applied
+# by the one-shot `migrate` command BEFORE the tests run (the service itself
+# never migrates, AGENTS.md §5).
+#
+# Throwaway: the Makefile target `test-auth` brings this stand up, runs the
+# tests and tears it down (containers, network AND volume removed — no
+# leftovers), even when a test fails. Never part of the main/dev/prod stacks.
+services:
+  auth-test-db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: auth
+      POSTGRES_PASSWORD: auth
+      POSTGRES_DB: auth_test
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U auth -d auth_test"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+    networks:
+      - auth-test-net
+
+  auth-test:
+    image: mcr.microsoft.com/dotnet/sdk:10.0
+    depends_on:
+      auth-test-db:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      # Reachable by name on the shared network.
+      ConnectionStrings__AuthConnection: "Host=auth-test-db;Port=5432;Database=auth_test;Username=auth;Password=auth"
+      # Keys in a temp dir; Development generates them on first start.
+      Jwt__CurrentKeyFile: /tmp/auth-test-keys/current.pem
+      Jwt__PreviousKeyFile: /tmp/auth-test-keys/previous.pem
+      Jwt__Issuer: 3dpaint.auth
+      Jwt__Audience: 3dpaint
+      Jwt__ExpiryMinutes: "15"
+      Jwt__RsaKeySize: "2048"
+      RefreshToken__ExpiryDays: "30"
+      RefreshToken__CookiePath: /api/auth
+      Password__MinLength: "10"
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "1"
+    volumes:
+      - ..:/work
+      - auth-test-nuget:/root/.nuget/packages
+    working_dir: /work/services/auth
+    command: >
+      sh -c "
+        set -e
+        # Build the test project (builds the Auth service as a dependency too).
+        dotnet build tests/Auth.Tests.csproj -c Release -v minimal --nologo
+        # Apply the EF migrations + seed the role to the test database first.
+        dotnet bin/Release/net10.0/Auth.dll migrate
+        # Generate the current AND the previous RSA key so the suite can verify
+        # the JWKS rotation window (both keys published, ADR 0018).
+        dotnet bin/Release/net10.0/Auth.dll keygen
+        # Run the suite (the app connects to the migrated test database).
+        dotnet test tests/Auth.Tests.csproj -c Release --no-build --nologo
+      "
+    networks:
+      - auth-test-net
+
+networks:
+  auth-test-net:
+
+volumes:
+  # NuGet cache for the throwaway stand (restored on first run, then reused for
+  # subsequent runs until the stand is torn down with --volumes).
+  auth-test-nuget:
