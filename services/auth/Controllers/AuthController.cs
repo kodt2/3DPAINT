@@ -101,11 +101,54 @@ public sealed class AuthController : ControllerBase
         return StatusCode(StatusCodes.Status201Created, AuthUserDtoMap.ToDto(user));
     }
 
-    /// <summary>POST /api/auth/logout — removes the auth cookies (idempotent).</summary>
+    /// <summary>
+    /// POST /api/auth/refresh — rotates the session: the <c>rt</c> cookie is
+    /// consumed atomically and a fresh access + refresh pair is issued. Every
+    /// failure (missing/garbage/expired/revoked/reused token) is the same 401
+    /// ProblemDetails, so the SPA simply falls back to the login screen.
+    /// </summary>
+    [HttpPost("refresh")]
+    [ProducesResponseType(typeof(AuthUserDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    public async Task<IActionResult> Refresh(CancellationToken cancellationToken)
+    {
+        var raw = Request.Cookies[AuthCookies.RefreshName];
+        if (string.IsNullOrEmpty(raw))
+        {
+            return SessionExpired();
+        }
+
+        var result = await _refresh.RotateAsync(raw, cancellationToken);
+        if (result.Outcome is not RefreshRotationOutcome.Success || result.User is null)
+        {
+            return SessionExpired();
+        }
+
+        var accessToken = _jwt.CreateAccessToken(result.User.Id, result.User.UserName!);
+        Response.Cookies.Append(AuthCookies.JwtName, accessToken, AuthCookies.Jwt(_jwtLifetime));
+        Response.Cookies.Append(
+            AuthCookies.RefreshName,
+            result.NewRawToken!,
+            AuthCookies.Refresh(_refreshOptions.CookiePath, TimeSpan.FromDays(_refreshOptions.ExpiryDays)));
+
+        return Ok(AuthUserDtoMap.ToDto(result.User));
+    }
+
+    /// <summary>
+    /// POST /api/auth/logout — revokes the refresh-token family and removes the
+    /// auth cookies (idempotent). Revoking the family makes any <c>rt</c> the
+    /// client still holds unusable, not just the cookies the client deletes.
+    /// </summary>
     [HttpPost("logout")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
-    public IActionResult Logout()
+    public async Task<IActionResult> Logout(CancellationToken cancellationToken)
     {
+        var raw = Request.Cookies[AuthCookies.RefreshName];
+        if (!string.IsNullOrEmpty(raw))
+        {
+            await _refresh.RevokeFamilyByTokenAsync(raw, cancellationToken);
+        }
+
         DeleteCookie(AuthCookies.JwtName, AuthCookies.DeletedJwt());
         DeleteCookie(AuthCookies.RefreshName, AuthCookies.DeletedRefresh(_refreshOptions.CookiePath));
         return NoContent();
@@ -138,6 +181,17 @@ public sealed class AuthController : ControllerBase
             rawRefresh,
             AuthCookies.Refresh(_refreshOptions.CookiePath, TimeSpan.FromDays(_refreshOptions.ExpiryDays)));
     }
+
+    /// <summary>
+    /// The uniform 401 for every /refresh failure. One message on purpose:
+    /// the client (and an attacker) must not be able to tell which kind of
+    /// token problem happened (ADR 0018).
+    /// </summary>
+    private IActionResult SessionExpired()
+        => Problem(
+            statusCode: StatusCodes.Status401Unauthorized,
+            title: "Unauthorized",
+            detail: "Сессия истекла. Войдите снова.");
 
     private static IActionResult PasswordProblem(string message)
     {

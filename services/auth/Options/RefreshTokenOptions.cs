@@ -18,4 +18,20 @@ public sealed class RefreshTokenOptions
     /// the browser never sends the refresh token to unrelated routes.
     /// </summary>
     public string CookiePath { get; set; } = "/api/auth";
+
+    /// <summary>
+    /// A replay of an already-replaced token inside this window is a duplicate
+    /// (401, family kept); outside the window it revokes the whole family.
+    /// Covers double-fired browser requests without weakening theft detection.
+    /// </summary>
+    public int ReuseGracePeriodSeconds { get; set; } = 60;
+
+    /// <summary>Interval between background cleanups of dead refresh-token rows.</summary>
+    public int CleanupIntervalHours { get; set; } = 1;
+
+    /// <summary>Batch size for the cleanup (rows per DELETE, looped until empty).</summary>
+    public int CleanupBatchSize { get; set; } = 500;
+
+    /// <summary>The grace window as a duration.</summary>
+    public TimeSpan ReuseGracePeriod => TimeSpan.FromSeconds(ReuseGracePeriodSeconds);
 }

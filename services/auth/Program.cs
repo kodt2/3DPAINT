@@ -5,6 +5,7 @@ using Auth.Entities;
 using Auth.Options;
 using Auth.Security;
 using Auth.Services;
+using Auth.Workers;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Identity;
@@ -45,9 +46,15 @@ builder.Services
         options.Password.RequireLowercase = false;
         options.Password.RequireUppercase = false;
         options.User.RequireUniqueEmail = false;
-        // Account lockout is step 4.2: the service authenticates with
-        // UserManager.CheckPasswordAsync (not SignInManager), so Identity's
-        // access-failure counter / lockout never triggers in 4.1.
+        // Account lockout (step 4.2, ADR 0018): 5 failed attempts lock the
+        // account for 15 minutes. The service authenticates with UserManager
+        // (not SignInManager), so LoginAsync drives the failure counter and
+        // the locked check explicitly; the response body stays the uniform
+        // 401 "Неверный логин или пароль" in both cases.
+        var lockout = builder.Configuration.GetSection("Lockout");
+        options.Lockout.MaxFailedAccessAttempts = lockout.GetValue<int>("MaxFailedAttempts", 5);
+        options.Lockout.DefaultLockoutTimeSpan = TimeSpan.FromMinutes(lockout.GetValue<int>("LockoutMinutes", 15));
+        options.Lockout.AllowedForNewUsers = true;
         options.User.AllowedUserNameCharacters =
             "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._@+";
     })
@@ -60,6 +67,9 @@ builder.Services.AddSingleton<JwtTokenService>();
 builder.Services.AddSingleton<JwksService>();
 builder.Services.AddScoped<RefreshTokenService>();
 builder.Services.AddScoped<IAuthService, AuthService>();
+
+// Hourly cleanup of dead refresh-token rows (step 4.2, ADR 0018).
+builder.Services.AddHostedService<RefreshTokenCleanupWorker>();
 
 // /health/ready must reflect the database the service depends on.
 builder.Services.AddHealthChecks()

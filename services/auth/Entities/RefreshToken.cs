@@ -33,4 +33,12 @@ public class RefreshToken
 
     /// <summary>Hash of the token that replaced this one (the rotation chain).</summary>
     public string? ReplacedByHash { get; set; }
+
+    /// <summary>
+    /// When the token was consumed by a rotation (step 4.2). A replay of a
+    /// replaced token inside the grace window is a harmless duplicate (e.g. a
+    /// double-fired browser request); a replay outside the window is treated
+    /// as theft and revokes the whole family.
+    /// </summary>
+    public DateTime? ReplacedAt { get; set; }
 }
