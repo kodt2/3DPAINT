@@ -431,9 +431,9 @@ Whitelist расширений загрузки теперь задаётся п
 - Ротация: оператор ставит новый ключ в `current.pem`, старый — в `previous.pem`; JWKS публикует оба, валидация — любым, подпись — только current.
 - Identity токена: `AUTH_JWT_ISSUER`/`AUTH_JWT_AUDIENCE` (дефолты `3dpaint.auth`/`3dpaint`) — **независимы** от монолитных `JWT_ISSUER`/`JWT_AUDIENCE` (в `.env.example`).
 
-### 15.3 Refresh-токены (часть 4.1)
+### 15.3 Refresh-токены (4.1; с 4.2 — см. раздел 16)
 
-Opaque-токен (32 байта, base64url), в БД — только SHA-256 хэш (таблица `RefreshTokens` — в миграции `InitialCreate`). Cookie `rt` (`HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/api/auth`) выдаётся на логине. `POST /api/auth/refresh`, ротация, детект повторного использования, lockout, cleanup — **4.2**.
+Opaque-токен (32 байта, base64url), в БД — только SHA-256 хэш (таблица `RefreshTokens` — в миграции `InitialCreate`). Cookie `rt` (`HttpOnly`, `Secure`, `SameSite=Strict`, `Path=/api/auth` — с 4.2; в 4.1 было `Lax`) выдаётся на логине. Ротация, детект повторного использования, lockout, cleanup — реализованы в **4.2** (раздел 16).
 
 ### 15.4 Компоновка
 
@@ -450,3 +450,34 @@ Opaque-токен (32 байта, base64url), в БД — только SHA-256 �
 ### 15.6 Валидация
 
 Всё зелёное: `make test-auth` (15/15), Release-сборка (0 предупреждений), `make up` (auth-цепочка up, health 200, портов наружу нет), живой smoke (register → login → me → JWKS → logout → 401), `gen:api`-совместимость (коды ответов 4 путей идентичны монолиту, `AuthUserDto` +`id`), production fail-fast без ключа, `make check-prod` (PASS), `make e2e` (31 passed + 2 skipped), `make e2e-https` (33 passed), секрет-скан диффа (чисто).
+
+## 16. Refresh-ротация, lockout, SPA-обработчик 401 (шаг 4.2, 2026-11-26, ADR 0018 §8–10)
+
+### 16.1 Исправления 4.1 (контракт register + cookie)
+
+- `RegisterRequest`: `fullName` и `birthDate` теперь **обязательны** (как в монолите): `[Required]` + `[StringLength(100)]` / `[BirthDateRange]` (не в будущем, не ранее `1900-01-01`, русское сообщение). Открытый контракт `gen:api` не изменился (схема `RegisterRequest` идентична монолиту — проверено сравнением swagger'ов).
+- Cookie-флаги собраны в одном месте — `Auth.Security.AuthCookies`: `jwt` = `HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/`; `rt` = `HttpOnly`, `Secure`, `SameSite=Strict`, `Path=/api/auth`. Атрибуты `Set-Cookie` проверяются тестами.
+
+### 16.2 `POST /api/auth/refresh` (ротация + детект повторного использования)
+
+- Токены живут **семействами** (`FamilyId`, GUID): login — семейство + первый токен, refresh — новый токен в том же семействе. Старый токен помечается **атомарно** (`ExecuteUpdateAsync` с условием `ReplacedAt IS NULL AND RevokedAt IS NULL AND ExpiresAt > now`; побеждает тот, у кого affected rows = 1) — из N параллельных refresh ровно один 200 (тест: 8 запросов).
+- Реплей заменённого токена: внутри grace-окна (`RefreshToken:ReuseGracePeriodSeconds`, дефолт 60 с) — **дубликат** (401, семейство живо); вне окна — **кража** (всё семейство ревакуется, 401, warning с id семейства/пользователя, токен в лог не пишется).
+- Все провалы — один 401 ProblemDetails `detail: "Сессия истекла. Войдите снова."`.
+- Logout ревакует семейство на сервере (не только cookie).
+- Миграция `20261126213344_AddReplacedAtAndFamilyIndex`: `RefreshTokens.ReplacedAt` + индекс `IX_RefreshTokens_FamilyId`.
+
+### 16.3 Lockout
+
+ASP.NET Identity: `Lockout:MaxFailedAttempts=5`, `Lockout:LockoutMinutes=15` (appsettings). Ответ при lockout — **тот же 401 с тем же телом**, что при неверном пароле (решение ADR 0018 §8: 429 отклонён, т.к. он раскрыл бы «аккаунт существует и заблокирован»). Тест: 5 неверных + 6-й с верным паролем — идентичные 401. Остаточный DoS-риск (заблокировать известный логин 5 запросами) принят: первая линия — Gateway IP rate limiting (4.3).
+
+### 16.4 Фоновая очистка
+
+`RefreshTokenCleanupWorker` (BackgroundService, `PeriodicTimer`): раз в час (`RefreshToken:CleanupIntervalHours`) удаляет мёртвые строки (`RevokedAt IS NOT NULL OR ExpiresAt < now`) пакетами по `RefreshToken:CleanupBatchSize` (дефолт 500) до пустого; заминированный внутри grace-окна токен остаётся до истечения `ExpiresAt`; каждый тик — свой DI scope, сбой тика не убивает воркер. Тест `Cleanup_RemovesOnlyDeadRows_InBatches` (пакетом по 1).
+
+### 16.5 SPA: single-flight обработчик 401
+
+`frontend/src/api/session.ts` (опция `fetch` openapi-fetch 0.17, `src/api/client.ts`): 401 на защищённом пути → один общий `POST /api/auth/refresh` на все параллельные 401 → при успехе исходный запрос повторяется ровно один раз (из `clone()`; повтор мимо обработчика — второй круг невозможен) → при провале — один редирект на `/spa/login` (latch; на `/spa/login` и `/spa/register` редирект пропущен — страницы сами шлют `/api/me`). `/api/auth/**` не перехватывается. Пока монолит не знает `/api/auth/refresh` (4.3), refresh отвечает non-2xx и поведение эквивалентно «401 → логин». Ограничения (access-токен живёт ≤ 15 мин без досрочного ревока) — ADR 0018 §10.
+
+### 16.6 Валидация
+
+`make test-auth` (29/29: +8 — ротация, дубликат vs кража, expired/unknown, logout-ревок, 8-way параллельный race, lockout-тело, batched cleanup), frontend: lint + 127 unit (15 файлов; +5 — `session.test.ts`) + build, `make e2e` (32 passed + 2 skipped; +1 — `e2e/session.spec.ts`: неавторизованный `/spa/library` → `/spa/login`, стабильность без цикла), `make e2e-https` (см. отчёт по шагу), `make check-prod`, секрет-скан диффа — чисто.
