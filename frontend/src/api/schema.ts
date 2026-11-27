@@ -513,8 +513,7 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         AuthUserDto: {
-            /** Format: int32 */
-            id?: number;
+            id?: string | null;
             login?: string | null;
             fullName?: string | null;
             /** Format: date */

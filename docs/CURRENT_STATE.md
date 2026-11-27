@@ -538,3 +538,45 @@ ASP.NET Identity: `Lockout:MaxFailedAttempts=5`, `Lockout:LockoutMinutes=15` (ap
 live-smoke через Gateway: register/login/me/upload/models (HS256),
 `/api/me` + `/api/models` с RS256-токеном Auth, подделанный токен → 401,
 legacy-`user_id` в БД — строки.
+
+## 18. Auth: ключи пользователей — GUID (шаг 4.3a.1, 2026-11-27, ADR 0018 §11)
+
+### 18.1 Что изменилось
+
+Решение 4.3a использовать числовой `int` id Auth отклонено: числовая строка
+могла совпасть с владельцем-легаси монолита (`sub='4'` vs файл
+`user_id='4'`), а последовательный `int` — не стабильная идентичность
+(`ARCHITECTURE.md` §4.2).
+
+- `AuthUser : IdentityUser<Guid>`, `IdentityRole<Guid>`,
+  `RefreshToken.UserId : Guid`; ключ генерируется приложением
+  (`Guid.CreateVersion7()`), `sub` в JWT — каноническая строка GUID в
+  нижнем регистре.
+- В проде данных Auth нет: начальная миграция пересоздана с нуля
+  (`20261127125229_InitialCreate`, ключи `uuid`) — без цепочки
+  `int -> Guid`. Локальный dev: том `auth-db-data` пересоздан
+  (локальные dev-аккаунты Auth потеряны — принято).
+- Монолит без изменений в коде: owner и так читается из `sub` как строка;
+  каноническая строка GUID никогда не равна числовому владельцу-легаси.
+  Новый тест монолита: файл с `user_id='4'` невидим любому Auth
+  RS256-пользователю с GUID-`sub` (список, GET, DELETE → пусто/404).
+- Тесты RS256 монолита теперь используют GUID-`sub` (раньше — строка `'42'`).
+- Фронтенд: `AuthUserDto.id` в `schema.ts` — `string | null` (было
+  `number`); код, использующий `.id`, нет.
+- Найден и исправлен latent-баг Auth (попал в 4.3a.1 из-за смены таймингов):
+  в `RefreshTokenService.RotateAsync` повторное чтение строки после
+  проигранного CAS возвращало **отслеживаемую** сущность EF Core со
+  старым значением `ReplacedAt = NULL` (EF не обновляет значения
+  отслеживаемых сущностей из результата запроса) — параллельные refresh-
+  проигравшие классифицировались как «угон» и отзывали семейство вместе с
+  токеном победителя. Фикс: `AsNoTracking()` на повторном чтении +
+  защита в `ClassifyReplayAsync` (NULL `ReplacedAt` → Invalid, семейство
+  не отзываться). Тест 8-путного race стабилен (3/3 изолированно,
+  29/29 в `make test-auth`).
+
+### 18.2 Валидация
+
+`make test` (монолит 23/23, Gateway 62/62), `make test-auth` (29/29,
+включая race), frontend: `gen:api` + `gen:api:check` + lint + 127 unit +
+build, `make e2e` (32 passed + 2 skipped), `make e2e-https` (34 passed),
+`make check-prod` (PASS).
