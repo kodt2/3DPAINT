@@ -19,6 +19,9 @@ public interface IAuthService
     /// <summary>Returns the user on success, or null for any invalid credential.</summary>
     Task<AuthUser?> LoginAsync(LoginRequest request, CancellationToken ct);
 
-    /// <summary>Returns the user by id (the JWT <c>sub</c>), or null if not found.</summary>
-    Task<AuthUser?> GetByIdAsync(int id, CancellationToken ct);
+    /// <summary>
+    /// Returns the user by id (the JWT <c>sub</c> — the version-7 Guid key as
+    /// a string), or null if not found.
+    /// </summary>
+    Task<AuthUser?> GetByIdAsync(Guid id, CancellationToken ct);
 }

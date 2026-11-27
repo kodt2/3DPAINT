@@ -63,7 +63,7 @@ public sealed class RefreshTokenService
     /// returns the raw token. The raw value is returned once and never stored;
     /// only its hash is persisted.
     /// </summary>
-    public async Task<string> CreateForUserAsync(int userId, CancellationToken ct)
+    public async Task<string> CreateForUserAsync(Guid userId, CancellationToken ct)
     {
         var raw = GenerateRawToken();
         var now = DateTime.UtcNow;

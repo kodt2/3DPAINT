@@ -14,7 +14,8 @@ public class RefreshToken
     /// <summary>SHA-256 (lower-case hex) of the raw token. Uniquely indexed.</summary>
     public string TokenHash { get; set; } = string.Empty;
 
-    public int UserId { get; set; }
+    /// <summary>Owner: the user's version-7 Guid key (step 4.3a.1).</summary>
+    public Guid UserId { get; set; }
 
     public AuthUser? User { get; set; }
 

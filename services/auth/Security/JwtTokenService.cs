@@ -8,9 +8,10 @@ namespace Auth.Security;
 
 /// <summary>
 /// Issues RS256 access tokens (ADR 0007 / ADR 0018): 15-minute lifetime,
-/// <c>kid</c> = JWK thumbprint in the header, <c>sub</c> = user id,
-/// <c>unique_name</c> = login. The token is assembled explicitly (header,
-/// payload, RS256 signature) so the <c>kid</c> is always present.
+/// <c>kid</c> = JWK thumbprint in the header, <c>sub</c> = the version-7 Guid
+/// user key as a canonical lower-case string, <c>unique_name</c> = login.
+/// The token is assembled explicitly (header, payload, RS256 signature) so
+/// the <c>kid</c> is always present.
 /// </summary>
 public sealed class JwtTokenService
 {
@@ -25,7 +26,7 @@ public sealed class JwtTokenService
         _keys = keys;
     }
 
-    public string CreateAccessToken(int userId, string login)
+    public string CreateAccessToken(Guid userId, string login)
     {
         var current = _keys.Current
             ?? throw new InvalidOperationException("The current RSA signing key is not loaded.");
