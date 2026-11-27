@@ -1,0 +1,84 @@
+# Monolith integration test stand (step 4.3a, ADR 0018 — compose-stand strategy).
+#
+# Runs the monolith .NET 8 test suite (xUnit + WebApplicationFactory) against
+# a dedicated, throwaway PostgreSQL and a throwaway SeaweedFS (S3) on a
+# private network. The app runs in-process (WebApplicationFactory) and
+# connects to `monolith-test-db` / `monolith-test-storage` by name; the JWKS
+# endpoint is served in-process by the test suite itself (loopback), so no
+# Auth service is needed in the stand.
+#
+# Migrations are applied by the one-shot `migrate` command BEFORE the tests
+# run (the web process never migrates, AGENTS.md §5 / 4.3a).
+#
+# Throwaway: the Makefile target `test-monolith` brings this stand up, runs
+# the tests and tears it down (containers, network AND volumes removed — no
+# leftovers), even when a test fails. Never part of the main/dev/prod stacks.
+services:
+  monolith-test-db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: monolith_test
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d monolith_test"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+    networks:
+      - monolith-test-net
+
+  monolith-test-storage:
+    # Same image as the dev stack (ADR 0009); S3 API only, no published
+    # ports (the in-process app talks to it by service name).
+    image: chrislusf/seaweedfs:4.54
+    command: server -s3 -s3.port=9000 -dir=/data
+    healthcheck:
+      # The image has no furl/curl; busybox wget probes the S3 API root
+      # (200 + ListAllMyBucketsResult) — exactly the endpoint the app uses.
+      # Startup takes ~20-30 s, so 40 x 3 s retries give ample headroom.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9000/"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+    networks:
+      - monolith-test-net
+
+  monolith-test:
+    image: mcr.microsoft.com/dotnet/sdk:8.0
+    depends_on:
+      monolith-test-db:
+        condition: service_healthy
+      monolith-test-storage:
+        condition: service_healthy
+    environment:
+      # Needed by the one-shot `migrate` command below (the in-process app
+      # under test gets its own connection string from the test factory).
+      ConnectionStrings__DefaultConnection: "Host=monolith-test-db;Port=5432;Database=monolith_test;Username=app;Password=app"
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "1"
+    volumes:
+      - ..:/work
+      - monolith-test-nuget:/root/.nuget/packages
+    working_dir: /work/legacy/monolith
+    command: >
+      sh -c "
+        set -e
+        # Build the test project (builds the monolith as a dependency too).
+        dotnet build tests/LoginAndReg.Tests.csproj -c Release -v minimal --nologo
+        # Apply the EF migrations to the test database BEFORE the tests
+        # (the in-process app under test never migrates).
+        dotnet bin/Release/net8.0/LoginAndReg.dll migrate
+        # Run the suite.
+        dotnet test tests/LoginAndReg.Tests.csproj -c Release --no-build --nologo
+      "
+    networks:
+      - monolith-test-net
+
+networks:
+  monolith-test-net:
+
+volumes:
+  # NuGet cache for the throwaway stand (restored on first run, then reused
+  # for subsequent runs until the stand is torn down with --volumes).
+  monolith-test-nuget:

@@ -15,6 +15,13 @@ COMPOSE_HTTPS := $(COMPOSE) -f infra/compose.https.yml --profile https
 # networks or volumes. Never part of the main/dev/prod stacks.
 COMPOSE_AUTH_TEST := docker compose -p 3dpaint-auth-test -f infra/compose.auth-test.yml
 AUTH_TEST_DOWN := $(COMPOSE_AUTH_TEST) down --volumes --remove-orphans
+# Monolith integration test stand (step 4.3a, ADR 0018): a throwaway
+# dedicated Postgres + SeaweedFS + the .NET 8 test suite (xUnit +
+# WebApplicationFactory) on a private network. The JWKS endpoint is served
+# in-process by the suite itself, so the Auth service is not in the stand.
+# Removed after the run (volumes included), even when a test fails.
+COMPOSE_MONOLITH_TEST := docker compose -p 3dpaint-monolith-test -f infra/compose.monolith-test.yml
+MONOLITH_TEST_DOWN := $(COMPOSE_MONOLITH_TEST) down --volumes --remove-orphans
 MONOLITH_CSPROJ := legacy/monolith/LoginAndReg.csproj
 # The legacy monolith stays on .NET 8; new services use .NET 10 (ADR 0012).
 DOTNET_SDK_8_IMG := mcr.microsoft.com/dotnet/sdk:8.0
@@ -41,6 +48,7 @@ COMPOSE_E2E := WEB_PORT=$(E2E_PORT) S3_PUBLIC_PORT=$(E2E_S3_PORT) \
     S3_FILER_PORT=$(E2E_FILER_PORT) \
     RATE_LIMIT_REQUESTS_PER_MINUTE=100 MAX_UPLOAD_BYTES=$(E2E_MAX_UPLOAD_BYTES) \
     APP_NETWORK_SUBNET=172.29.0.0/16 \
+    WEB_DEV_PORT=18098 AUTH_DEV_PORT=18099 \
     $(COMPOSE) -p 3dpaint-e2e -f infra/compose.e2e.yml
 E2E_DOWN := $(COMPOSE) -p 3dpaint-e2e down --volumes --remove-orphans
 
@@ -65,6 +73,7 @@ COMPOSE_E2E_HTTPS := \
     PUBLIC_S3_ENDPOINT=https://localhost:$(E2E_S3_HTTPS_PORT) \
     S3_CORS_ORIGINS=https://localhost:$(E2E_HTTPS_PORT) \
     WEB_PORT=18091 S3_PUBLIC_PORT=19001 S3_FILER_PORT=18899 \
+    WEB_DEV_PORT=18100 AUTH_DEV_PORT=18101 \
     E2E_WEB_PORT=$(E2E_HTTPS_WEB_PORT) \
     RATE_LIMIT_REQUESTS_PER_MINUTE=100 MAX_UPLOAD_BYTES=$(E2E_MAX_UPLOAD_BYTES) \
     APP_NETWORK_SUBNET=172.30.0.0/16 APP_NETWORK_CADDY_IP=172.30.0.10 \
@@ -92,9 +101,18 @@ logs: ## Tail stack logs
 build: ## Build stack images
 	$(COMPOSE) build
 
-test: ## Build the monolith and run gateway tests (in a container; host SDK not required)
+test: ## Build the monolith, run monolith + gateway tests (in containers; host SDK not required)
 	docker run --rm -v "$(CURDIR):/work" -w /work/legacy/monolith $(DOTNET_SDK_8_IMG) dotnet build
+	$(MAKE) test-monolith
 	docker run --rm -v "$(CURDIR):/work" -w /work/services/gateway/tests $(DOTNET_SDK_10_IMG) dotnet test
+
+test-monolith: ## Run the monolith integration tests (throwaway Postgres+S3 stand, ADR 0018)
+	-@$(MONOLITH_TEST_DOWN) >/dev/null 2>&1
+	@echo "Running the monolith integration tests (Postgres+S3 stand)..."
+	@status=0; \
+	$(COMPOSE_MONOLITH_TEST) up --abort-on-container-exit --exit-code-from monolith-test || status=$$?; \
+	$(MONOLITH_TEST_DOWN); \
+	exit $$status
 
 test-auth: ## Run the Auth service integration tests (throwaway Postgres stand, ADR 0018)
 	-@$(AUTH_TEST_DOWN) >/dev/null 2>&1
