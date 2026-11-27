@@ -45,8 +45,10 @@ export function problemFrom(value: unknown): ProblemBody | undefined {
 }
 
 /**
- * POST /api/auth/login. The monolith sets the "jwt" cookie on success, so
- * the SPA does not store any token itself (ADR 0011).
+ * POST /api/auth/login. The service sets the "jwt" cookie on success, so
+ * the SPA does not store any token itself (ADR 0011). From step 4.3b the
+ * Gateway routes this to the Auth service (before 4.3b — the monolith);
+ * the generated schema describes the Auth shape in both cases.
  */
 export async function login(login: string, password: string): Promise<AuthUser> {
   const { data, error, response } = await api.POST('/api/auth/login', {

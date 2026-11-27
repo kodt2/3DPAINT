@@ -3,8 +3,18 @@
 # (the Makefile passes both files explicitly). Production-like runs use
 # infra/compose.yml only.
 #
-# Currently there are no dev overrides: the base file already matches the
-# previous root docker-compose.yml behavior. Add dev-only services, ports
-# or environment here (e.g. a local OpenTelemetry collector).
+# Both loopback ports exist ONLY for `npm run gen:api` (step 4.3a): the
+# Gateway has no /swagger route by design (3d.2 — no catch-all, unknown
+# paths are 404), so the two OpenAPI documents must be reachable directly.
+# They are bound to 127.0.0.1 only and never published on the LAN; the
+# Gateway routing itself is not changed.
 
-services: {}
+services:
+  web:
+    ports:
+      # Monolith OpenAPI document (the `SWAGGER_URL` source for gen:api).
+      - "127.0.0.1:${WEB_DEV_PORT:-18097}:8080"
+  auth:
+    ports:
+      # Auth OpenAPI document (the `AUTH_SWAGGER_URL` source for gen:api).
+      - "127.0.0.1:${AUTH_DEV_PORT:-18096}:8080"
