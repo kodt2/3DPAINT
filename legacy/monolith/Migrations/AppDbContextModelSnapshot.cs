@@ -98,8 +98,9 @@ namespace LoginAndReg.Migrations
                         .HasMaxLength(500)
                         .HasColumnType("character varying(500)");
 
-                    b.Property<int>("user_id")
-                        .HasColumnType("integer");
+                    b.Property<string>("user_id")
+                        .IsRequired()
+                        .HasColumnType("text");
 
                     b.HasKey("id");
 
@@ -109,17 +110,6 @@ namespace LoginAndReg.Migrations
                         .IsUnique();
 
                     b.ToTable("UserFiles");
-                });
-
-            modelBuilder.Entity("LoginAndReg.Models.Entities.UserFile", b =>
-                {
-                    b.HasOne("LoginAndReg.Models.Entities.User", "user")
-                        .WithMany()
-                        .HasForeignKey("user_id")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("user");
                 });
 #pragma warning restore 612, 618
         }

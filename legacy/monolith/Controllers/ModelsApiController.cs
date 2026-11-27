@@ -62,14 +62,14 @@ namespace LoginAndReg.Controllers
                     detail: $"page must be >= 1 and pageSize between {MinPageSize} and {MaxPageSize}.");
             }
 
-            var userId = await GetCurrentUserIdAsync(cancellationToken);
-            if (userId is null)
+            var owner = await GetCurrentOwnerAsync(cancellationToken);
+            if (owner is null)
             {
                 return Unauthorized();
             }
 
             var query = _context.UserFiles
-                .Where(f => f.user_id == userId)
+                .Where(f => f.user_id == owner)
                 .OrderByDescending(f => f.created_at)
                 .ThenByDescending(f => f.id);
 
@@ -99,14 +99,14 @@ namespace LoginAndReg.Controllers
         [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
         public async Task<IActionResult> GetMyModel(Guid id, CancellationToken cancellationToken)
         {
-            var userId = await GetCurrentUserIdAsync(cancellationToken);
-            if (userId is null)
+            var owner = await GetCurrentOwnerAsync(cancellationToken);
+            if (owner is null)
             {
                 return Unauthorized();
             }
 
             var file = await _context.UserFiles
-                .Where(f => f.id == id && f.user_id == userId)
+                .Where(f => f.id == id && f.user_id == owner)
                 .AsNoTracking()
                 .FirstOrDefaultAsync(cancellationToken);
             if (file is null)
@@ -140,15 +140,15 @@ namespace LoginAndReg.Controllers
         [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status500InternalServerError)]
         public async Task<IActionResult> DeleteMyModel(Guid id, CancellationToken cancellationToken)
         {
-            var userId = await GetCurrentUserIdAsync(cancellationToken);
-            if (userId is null)
+            var owner = await GetCurrentOwnerAsync(cancellationToken);
+            if (owner is null)
             {
                 return Unauthorized();
             }
 
             // Owner check is part of the query itself: a foreign id is a 404.
             var file = await _context.UserFiles
-                .Where(f => f.id == id && f.user_id == userId)
+                .Where(f => f.id == id && f.user_id == owner)
                 .FirstOrDefaultAsync(cancellationToken);
             if (file is null)
             {
@@ -182,19 +182,13 @@ namespace LoginAndReg.Controllers
             return NoContent();
         }
 
-        private async Task<int?> GetCurrentUserIdAsync(CancellationToken cancellationToken)
-        {
-            var login = User.FindFirstValue(ClaimTypes.Name);
-            if (string.IsNullOrWhiteSpace(login))
-            {
-                return null;
-            }
-
-            return await _context.Users
-                .Where(u => u.login == login)
-                .Select(u => (int?)u.id)
-                .SingleOrDefaultAsync(cancellationToken);
-        }
+        /// <summary>
+        /// The owner as a string (step 4.3a): <c>sub</c> for the Auth RS256
+        /// tokens, the legacy numeric id for the HS256 monolith tokens — see
+        /// <see cref="CurrentOwner"/>. Null means unauthenticated.
+        /// </summary>
+        private Task<string?> GetCurrentOwnerAsync(CancellationToken cancellationToken)
+            => CurrentOwner.ResolveAsync(_context, User, cancellationToken);
 
         private async Task<IReadOnlyList<ModelDto>> ToModelDtosAsync(
             IReadOnlyList<UserFile> files,

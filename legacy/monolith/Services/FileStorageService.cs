@@ -42,7 +42,7 @@ public class FileStorageService : IFileStorageService
         _logger = logger;
     }
 
-    public async Task<UserFile> UploadFileAsync(int userId, IFormFile file, CancellationToken cancellationToken = default)
+    public async Task<UserFile> UploadFileAsync(string userId, IFormFile file, CancellationToken cancellationToken = default)
     {
         _logger.LogInformation(">>> [UPLOAD START] User: {UserId}, FileName: {FileName}, Size: {FileSize} bytes",
             userId, file.FileName, file.Length);
@@ -152,7 +152,7 @@ public class FileStorageService : IFileStorageService
         }
     }
 
-    public async Task<IReadOnlyList<UserFile>> GetUserFilesAsync(int userId, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<UserFile>> GetUserFilesAsync(string userId, CancellationToken cancellationToken = default)
     {
         return await _context.UserFiles
             .Where(x => x.user_id == userId)
@@ -339,7 +339,7 @@ public class FileStorageService : IFileStorageService
         }
     }
 
-    private async Task<string> GetUniqueFileNameAsync(int userId, string originalName, CancellationToken cancellationToken)
+    private async Task<string> GetUniqueFileNameAsync(string userId, string originalName, CancellationToken cancellationToken)
     {
         var baseName = Path.GetFileNameWithoutExtension(originalName);
         var extension = Path.GetExtension(originalName);
@@ -354,7 +354,7 @@ public class FileStorageService : IFileStorageService
         return candidate;
     }
 
-    private async Task<string> CreateAndUploadThumbnailAsync(int userId, Guid fileId, string fileName, CancellationToken cancellationToken)
+    private async Task<string> CreateAndUploadThumbnailAsync(string userId, Guid fileId, string fileName, CancellationToken cancellationToken)
     {
         var extension = Path.GetExtension(fileName).TrimStart('.').ToUpperInvariant();
         var label = fileName.Length > 24 ? fileName[..24] + "…" : fileName;

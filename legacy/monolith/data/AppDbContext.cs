@@ -34,10 +34,9 @@ public class AppDbContext : DbContext
             entity.HasIndex(f => f.user_id);
             entity.HasIndex(f => new { f.user_id, f.file_name }).IsUnique();
 
-            entity.HasOne(f => f.user)
-                  .WithMany()
-                  .HasForeignKey(f => f.user_id)
-                  .OnDelete(DeleteBehavior.Cascade);
+            // No FK to Users since step 4.3a: user_id is a string owner id
+            // (Auth sub for RS256 tokens, legacy numeric id as a string for
+            // HS256 tokens). Auth users are not in this database (ADR 0018).
         });
     }
 
