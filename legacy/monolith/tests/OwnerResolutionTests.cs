@@ -45,8 +45,10 @@ public sealed class OwnerResolutionTests : IAsyncLifetime
     [Fact]
     public async Task Rs256_OwnerIsSub_StringIdorIsBlocked()
     {
-        var ownerSub = "9" + Guid.NewGuid().ToString("N")[..8];
-        var otherSub = "9" + Guid.NewGuid().ToString("N")[..8];
+        // The Auth service issues the user id as a canonical lower-case GUID
+        // string (step 4.3a.1) — the tests use the same shape.
+        var ownerSub = Guid.NewGuid().ToString("D");
+        var otherSub = Guid.NewGuid().ToString("D");
         var ownerToken = TestTokens.MakeRs256(_key, Kid, sub: ownerSub, login: "owner");
         var otherToken = TestTokens.MakeRs256(_key, Kid, sub: otherSub, login: "other");
 
@@ -58,8 +60,7 @@ public sealed class OwnerResolutionTests : IAsyncLifetime
         // The owner sees the file in /api/models.
         var ownerList = await ApiHelpers.Send(_factory, HttpMethod.Get, "/api/models", jwtToken: ownerToken);
         Assert.Equal(HttpStatusCode.OK, ownerList.StatusCode);
-        var ownerItems = await ReadPagedItemsAsync(ownerList);
-        var uploadedId = ownerItems.Single().id;
+        var uploadedId = (await ReadPagedItemsAsync(ownerList)).Single();
         Assert.Equal(ownerSub, await AssertStoredOwnerAsync(uploadedId, ownerSub));
 
         // A different sub sees an empty list...
@@ -81,6 +82,42 @@ public sealed class OwnerResolutionTests : IAsyncLifetime
         var ownerDelete = await ApiHelpers.Send(_factory, HttpMethod.Delete, $"/api/models/{uploadedId}",
             jwtToken: ownerToken);
         Assert.Equal(HttpStatusCode.NoContent, ownerDelete.StatusCode);
+    }
+
+    [Fact]
+    public async Task Rs256_GuidSubCannotSeeLegacyNumericOwnerFile()
+    {
+        // A legacy file stored with the numeric owner '4' must be invisible
+        // to every Auth RS256 user: no canonical lower-case GUID string
+        // equals '4', so WHERE user_id = <guid> can never match it.
+        var legacyFileId = await DbQuery.SeedFileAsync("4", "legacy-owner-4.glb");
+        try
+        {
+            var sub = Guid.NewGuid().ToString("D");
+            var token = TestTokens.MakeRs256(_key, Kid, sub: sub, login: "authuser");
+
+            // Not in the model list...
+            var list = await ApiHelpers.Send(_factory, HttpMethod.Get, "/api/models", jwtToken: token);
+            Assert.Equal(HttpStatusCode.OK, list.StatusCode);
+            Assert.DoesNotContain(legacyFileId, await ReadPagedItemsAsync(list));
+
+            // ...not readable by id (404, no existence leak)...
+            var get = await ApiHelpers.Send(_factory, HttpMethod.Get, $"/api/models/{legacyFileId}",
+                jwtToken: token);
+            Assert.Equal(HttpStatusCode.NotFound, get.StatusCode);
+
+            // ...and not deletable.
+            var delete = await ApiHelpers.Send(_factory, HttpMethod.Delete, $"/api/models/{legacyFileId}",
+                jwtToken: token);
+            Assert.Equal(HttpStatusCode.NotFound, delete.StatusCode);
+
+            // The row survived the delete attempt.
+            Assert.Equal("4", await DbQuery.StoredOwnerAsync(legacyFileId));
+        }
+        finally
+        {
+            await DbQuery.DeleteFileAsync(legacyFileId);
+        }
     }
 
     [Fact]
@@ -107,8 +144,7 @@ public sealed class OwnerResolutionTests : IAsyncLifetime
 
         var list = await ApiHelpers.Send(_factory, HttpMethod.Get, "/api/models", jwtToken: token);
         Assert.Equal(HttpStatusCode.OK, list.StatusCode);
-        var items = await ReadPagedItemsAsync(list);
-        var uploadedId = items.Single().id;
+        var uploadedId = (await ReadPagedItemsAsync(list)).Single();
 
         // The stored owner is a decimal string (the Users.id), not a GUID.
         var storedOwner = await AssertStoredOwnerAsync(uploadedId, null);
@@ -131,7 +167,7 @@ public sealed class OwnerResolutionTests : IAsyncLifetime
         return owner!;
     }
 
-    private static async Task<List<Item>> ReadPagedItemsAsync(HttpResponseMessage response)
+    private static async Task<List<string>> ReadPagedItemsAsync(HttpResponseMessage response)
     {
         var body = await response.Content.ReadAsStringAsync();
         using var doc = JsonDocument.Parse(body);
@@ -140,14 +176,12 @@ public sealed class OwnerResolutionTests : IAsyncLifetime
             ? items
             : throw new InvalidOperationException($"No 'items' in: {body}");
 
-        var result = new List<Item>();
+        var result = new List<string>();
         foreach (var item in itemsElement.EnumerateArray())
         {
-            result.Add(new Item(item.GetProperty("id").GetString()!));
+            result.Add(item.GetProperty("id").GetString()!);
         }
 
         return result;
     }
-
-    private sealed record Item(string id);
 }

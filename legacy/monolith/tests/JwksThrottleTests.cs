@@ -14,6 +14,10 @@ public sealed class JwksThrottleTests : IAsyncLifetime
 {
     private const string UnknownKid = "kid-not-in-jwks";
 
+    // The Auth service issues the user id as a canonical lower-case GUID
+    // string in the sub claim (step 4.3a.1).
+    private const string Sub = "01970000-0000-7000-8000-000000000001";
+
     private readonly JwksTestServer _jwks;
     private readonly MonolithAppFactory _factory;
     private readonly RsaSecurityKey _key;
@@ -46,7 +50,7 @@ public sealed class JwksThrottleTests : IAsyncLifetime
     public async Task UnknownKid_FetchesJwksAtMostOnceWithinThrottleWindow()
     {
         var key2 = TestTokens.NewRsaKey();
-        var token = TestTokens.MakeRs256(key2, UnknownKid, sub: "42", login: "authuser");
+        var token = TestTokens.MakeRs256(key2, UnknownKid, sub: Sub, login: "authuser");
 
         var hitsBefore = _jwks.HitCount;
 
@@ -66,7 +70,7 @@ public sealed class JwksThrottleTests : IAsyncLifetime
     {
         // After the key for kid 'kid-present' is cached, further tokens with
         // the same kid must not trigger another document fetch.
-        var token = TestTokens.MakeRs256(_key, "kid-present", sub: "42", login: "authuser");
+        var token = TestTokens.MakeRs256(_key, "kid-present", sub: Sub, login: "authuser");
 
         var first = await ApiHelpers.Send(_factory, HttpMethod.Get, "/api/me", jwtToken: token);
         Assert.Equal(HttpStatusCode.OK, first.StatusCode);
