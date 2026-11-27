@@ -3,8 +3,9 @@ import type { paths } from './schema';
 import { sessionFetch } from './session';
 
 /**
- * Typed API client generated from the monolith OpenAPI document
- * (regenerate with `npm run gen:api`). The client talks to the same origin:
+ * Typed API client generated from the merged OpenAPI document (monolith +
+ * Auth service, step 4.3a; regenerate with `npm run gen:api`, CI check with
+ * `npm run gen:api:check`). The client talks to the same origin:
  * in production the Gateway routes /api/** to the monolith, in dev the Vite
  * server proxies /api/** to the Gateway — no CORS, cookies work as-is.
  *

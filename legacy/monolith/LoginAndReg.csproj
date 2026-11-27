@@ -28,6 +28,14 @@
   </None>
 </ItemGroup>
 <ItemGroup>
+  <!-- The integration test project (step 4.3a) is a separate assembly; keep
+       its sources out of the app compilation. -->
+  <Compile Remove="tests/**" />
+  <Content Remove="tests/**" />
+  <None Remove="tests/**" />
+  <EmbeddedResource Remove="tests/**" />
+</ItemGroup>
+<ItemGroup>
   <Folder Include="Migrations\" />
 </ItemGroup>
 

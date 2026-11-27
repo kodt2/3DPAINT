@@ -481,3 +481,60 @@ ASP.NET Identity: `Lockout:MaxFailedAttempts=5`, `Lockout:LockoutMinutes=15` (ap
 ### 16.6 Валидация
 
 `make test-auth` (29/29: +8 — ротация, дубликат vs кража, expired/unknown, logout-ревок, 8-way параллельный race, lockout-тело, batched cleanup), frontend: lint + 127 unit (15 файлов; +5 — `session.test.ts`) + build, `make e2e` (32 passed + 2 skipped; +1 — `e2e/session.spec.ts`: неавторизованный `/spa/library` → `/spa/login`, стабильность без цикла), `make e2e-https` (см. отчёт по шагу), `make check-prod`, секрет-скан диффа — чисто.
+
+## 17. Монолит принимает RS256 от Auth; owner — строка (шаг 4.3a, 2026-11-27, ADR 0018 §11)
+
+### 17.1 Что изменилось
+
+- **JWT в монолите — две схемы.** Старые HS256-токены (`JWT_SECRET`) и токены
+  Auth RS256 (JWKS с `http://auth:8080/.well-known/jwks.json`, issuer/audience
+  из конфига Auth) валидируются в одном процессе; схема выбирается по `alg`
+  JOSE-заголовка. Для обоих типов обязательны подпись, issuer, audience, срок;
+  HS256-токены теперь несут `iss`/`aud` (`JWT_ISSUER`/`JWT_AUDIENCE`).
+  `ClockSkew` — `JWT_CLOCK_SKEW_SECONDS` (дефолт 30 с).
+- **JWKS:** ленивая загрузка, кэш в памяти, Auth недоступен → 401 (не 500) и
+  старт/`/api/health` работают; неизвестный `kid` → повторный fetch не чаще
+  раза в 30 с. Gateway токены **не проверяет** (TD-31; Фаза 5),
+  `/.well-known/jwks.json` на Gateway **нет**.
+- **Владелец файла — строка.** `"UserFiles".user_id`: `integer` → `text`
+  (миграция `20261127001848_UserFilesUserIdToText`, данные `5` → `'5'`,
+  FK на `"Users"` снят). RS256: владелец = `sub` (без запроса к БД); HS256:
+  lookup login → id, как строка. `"Persons".user_id` — пока `integer` (4.3c).
+- **Миграция — one-shot:** `dotnet LoginAndReg.dll migrate` + контейнер
+  `monolith-migrate` (web ждёт его завершения; у `db` добавлен healthcheck).
+  Веб-процесс мигрировать не может.
+- **Поведение для пользователей не изменилось:** Gateway шлёт всё в монолит,
+  логин/регистрация — монолит (HS256). Auth-токен при этом уже принимается
+  монолитом (live: `/api/me`, `/api/models` с RS256-токеном через Gateway).
+- **`gen:api` — два источника:** пути `/api/me` и `/api/auth/**` из OpenAPI
+  Auth, остальное — из монолита (`frontend/scripts/gen-api.mjs`); в dev оба
+  документа доступны по loopback-портам из `infra/compose.override.yml`
+  (`127.0.0.1:18096` Auth, `127.0.0.1:18097` монолит; Gateway `/swagger` не
+  маршрутизирует — 3d.2). `npm run gen:api:check` — сравнение с закоммиченным
+  `schema.ts`. Diff схемы после 4.3a: +`/api/auth/refresh`, `AuthUserDto.id?`.
+- **Тесты монолита:** `legacy/monolith/tests` (.NET 8, xUnit,
+  `WebApplicationFactory<Program>`), стенд `infra/compose.monolith-test.yml`
+  (Postgres + SeaweedFS, одноразовый). 22 теста: обе схемы, JWKS-сбои,
+  троттлинг `kid`, owner/IDOR, миграция (scratch-БД). Запуск:
+  `make test-monolith` (входит в `make test`).
+
+### 17.2 Новые env-переменные
+
+| Переменная | Дефолт | Где читается | Назначение |
+|---|---|---|---|
+| `JWT_CLOCK_SKEW_SECONDS` | 30 | монолит | ClockSkew обеих JWT-схем |
+| `MONOLITH_JWKS_URL` | `http://auth:8080/.well-known/jwks.json` | монолит | Адрес JWKS Auth |
+| `MONOLITH_JWKS_REQUIRE_HTTPS` | `false` | монолит | Требовать HTTPS для JWKS (fail-fast при неверной комбинации) |
+| `MONOLITH_JWKS_REFRESH_THROTTLE_SECONDS` | 30 | монолит | Мин. пауза между повторными fetch JWKS |
+| `AUTH_DEV_PORT` | 18096 | dev compose (override) | loopback-порт OpenAPI Auth для `gen:api` |
+| `WEB_DEV_PORT` | 18097 | dev compose (override) | loopback-порт OpenAPI монолита для `gen:api` |
+
+### 17.3 Валидация
+
+`make test` (монолит: 0 предупреждений; интеграция 22/22; Gateway 62/62),
+`make test-auth` (29/29), frontend: `gen:api` + `gen:api:check` + lint +
+127 unit + build, `make e2e` (32 passed + 2 skipped), `make e2e-https`
+(34 passed), `make check-prod` (PASS, включая «no ports published» для web/auth),
+live-smoke через Gateway: register/login/me/upload/models (HS256),
+`/api/me` + `/api/models` с RS256-токеном Auth, подделанный токен → 401,
+legacy-`user_id` в БД — строки.

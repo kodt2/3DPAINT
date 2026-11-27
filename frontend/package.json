@@ -16,7 +16,8 @@
         "format": "prettier --write .",
         "format:check": "prettier --check .",
         "test": "vitest run",
-        "gen:api": "openapi-typescript \"${SWAGGER_URL:-http://127.0.0.1:8080/swagger/v1/swagger.json}\" -o src/api/schema.ts",
+        "gen:api": "node scripts/gen-api.mjs",
+        "gen:api:check": "node scripts/gen-api.mjs --check",
         "inspect:glb": "node scripts/inspect-glb.mjs",
         "test:e2e": "playwright test"
     },

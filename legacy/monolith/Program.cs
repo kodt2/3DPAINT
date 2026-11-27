@@ -1,5 +1,6 @@
 using LoginAndReg.Models.Options;
 using LoginAndReg.OpenApi;
+using LoginAndReg.Security;
 using LoginAndReg.Services;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -54,26 +55,45 @@ builder.Services.Configure<UploadOptions>(options =>
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseNpgsql(connectionString));
 
-var jwtOptions = builder.Configuration.GetSection(JwtOptions.SectionName).Get<JwtOptions>()
-    ?? throw new InvalidOperationException("JWT configuration is missing.");
-if (string.IsNullOrWhiteSpace(jwtOptions.Key))
+// One-shot migration mode: `dotnet LoginAndReg.dll migrate` applies the
+// migrations and exits (AGENTS.md §5: migrations are a separate command,
+// never implicit web startup). It runs in the dedicated monolith-migrate
+// container, which carries only the connection string — so the command is
+// handled here, before the JWT/JWKS/Minio validation below that the web
+// process needs but a migration does not.
+if (args.Length > 0 && args[0] == "migrate")
 {
-    throw new InvalidOperationException("JWT key is not configured!");
+    var migrationHost = builder.Build();
+    using var scope = migrationHost.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    db.Database.Migrate();
+    Console.WriteLine("Monolith database migrated.");
+    // A bare return exits the top-level Main with code 0 before the HTTP
+    // pipeline is ever built.
+    return;
 }
 
-builder.Services.AddSingleton(new JwtService(jwtOptions.Key, jwtOptions.ExpiryMinutes));
+// JWT / JWKS / Minio options are read lazily (see the Read* helpers below):
+// the integration test stand (WebApplicationFactory) overrides the
+// configuration in memory at host-build time, so values captured eagerly in
+// this top-level scope would bypass the overrides. Startup still fails fast:
+// the same helpers run as validation right after the build, before any
+// request is served.
+//
+// RS256 tokens from the Auth service (step 4.3a, ADR 0018): JWKS is fetched
+// lazily (on the first RS256 token), so a down Auth service does not block
+// monolith startup or the /api/health probe.
+builder.Services.AddSingleton(sp =>
+{
+    var jwt = ReadJwtOptions(sp.GetRequiredService<IConfiguration>());
+    return new JwtService(jwt.Key, jwt.ExpiryMinutes, jwt.Issuer, jwt.Audience);
+});
+builder.Services.AddSingleton(sp =>
+    ReadAuthJwksOptions(sp.GetRequiredService<IConfiguration>()));
+builder.Services.AddSingleton<JwksKeyProvider>();
 builder.Services.AddScoped<IPasswordService, PasswordService>();
 builder.Services.AddScoped<IAccountService, AccountService>();
 builder.Services.AddScoped<IFileStorageService, FileStorageService>();
-
-var minioOptions = builder.Configuration.GetSection(MinioOptions.SectionName).Get<MinioOptions>()
-    ?? throw new InvalidOperationException("Minio configuration is missing.");
-if (string.IsNullOrWhiteSpace(minioOptions.Endpoint)
-    || string.IsNullOrWhiteSpace(minioOptions.AccessKey)
-    || string.IsNullOrWhiteSpace(minioOptions.SecretKey))
-{
-    throw new InvalidOperationException("Minio configuration is invalid.");
-}
 
 builder.Services.Configure<MinioOptions>(builder.Configuration.GetSection(MinioOptions.SectionName));
 // Presigned URLs must be reachable from the browser (TD-3): sign them with the
@@ -90,18 +110,19 @@ builder.Services.Configure<FormOptions>(options =>
     options.MultipartBodyLengthLimit = maxUploadBytes + UploadOptions.BodySlack;
     options.MemoryBufferThreshold = int.MaxValue;
 });
-builder.Services.AddSingleton<IMinioClient>(_ =>
+builder.Services.AddSingleton<IMinioClient>(sp =>
 {
+    var minio = ReadMinioOptions(sp.GetRequiredService<IConfiguration>());
     var client = new MinioClient()
-        .WithEndpoint(minioOptions.Endpoint)
-        .WithCredentials(minioOptions.AccessKey, minioOptions.SecretKey)
-        .WithSSL(minioOptions.UseSsl)
+        .WithEndpoint(minio.Endpoint)
+        .WithCredentials(minio.AccessKey, minio.SecretKey)
+        .WithSSL(minio.UseSsl)
         .WithHttpClient(new HttpClient(new HttpClientHandler()) { DefaultRequestVersion = System.Net.HttpVersion.Version11 });
 
     // Region is optional: not every S3-compatible storage requires it (ADR 0009).
-    if (!string.IsNullOrWhiteSpace(minioOptions.Region))
+    if (!string.IsNullOrWhiteSpace(minio.Region))
     {
-        client = client.WithRegion(minioOptions.Region);
+        client = client.WithRegion(minio.Region);
     }
 
     return client.Build();
@@ -136,44 +157,139 @@ builder.Services.AddSwaggerGen(options =>
     });
 });
 
+// Two JWT schemes (step 4.3a, ADR 0018): the legacy HS256 (monolith-issued)
+// and the RS256 from the Auth service (JWKS-validated). The 401 middleware
+// below picks the scheme per request from the JOSE <c>alg</c> header.
+// Neither scheme is weakened: signature, issuer, audience and lifetime are
+// validated for both; ClockSkew is the same for both.
+Task MessageReceivedReadJwtCookie(MessageReceivedContext context)
+{
+    if (context.Request.Cookies.TryGetValue(AuthCookie.Name, out var token) && !string.IsNullOrWhiteSpace(token))
+    {
+        context.Token = token;
+    }
+
+    return Task.CompletedTask;
+}
+
+// The JwtBearer configure actions run lazily — on the first options
+// resolution (the first authentication request, i.e. after Build()) — so
+// the JwksKeyProvider is captured through this local and assigned right
+// after the app is built below. The configuration is read inside the
+// configure actions for the same reason: only from the build on are the
+// in-memory overrides of the test stand visible.
+JwksKeyProvider? jwksProvider = null;
+JwksKeyProvider RequireJwksProvider() => jwksProvider
+    ?? throw new InvalidOperationException("JwksKeyProvider is not initialized yet.");
+var configuration = builder.Configuration;
+
 builder.Services.AddAuthentication(options =>
 {
     options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
     options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
 })
-.AddJwtBearer(options =>
+.AddJwtBearer(JwtBearerDefaults.AuthenticationScheme, options =>
 {
+    var jwt = ReadJwtOptions(configuration);
+    options.RequireHttpsMetadata = false;
+    options.SaveToken = true;
+    options.Events = new JwtBearerEvents { OnMessageReceived = MessageReceivedReadJwtCookie };
+    options.TokenValidationParameters = new TokenValidationParameters
+    {
+        ValidateIssuer = true,
+        ValidIssuer = jwt.Issuer,
+        ValidateAudience = true,
+        ValidAudience = jwt.Audience,
+        ValidateLifetime = true,
+        ValidateIssuerSigningKey = true,
+        ClockSkew = TimeSpan.FromSeconds(jwt.ClockSkewSeconds),
+        IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwt.Key))
+    };
+})
+.AddJwtBearer(JwtSchemes.Rs256, options =>
+{
+    // Keys come from our own lazy JwksKeyProvider (no built-in metadata
+    // download), so RequireHttpsMetadata is moot; the http-allowance for the
+    // internal Auth address is the explicit AuthJwks:RequireHttps config.
+    var jwks = RequireJwksProvider();
+    var jwt = ReadJwtOptions(configuration);
+    var authJwks = ReadAuthJwksOptions(configuration);
+
     options.RequireHttpsMetadata = false;
     options.SaveToken = true;
     options.Events = new JwtBearerEvents
     {
-        OnMessageReceived = context =>
+        OnMessageReceived = async context =>
         {
-            if (context.Request.Cookies.ContainsKey("jwt"))
+            await MessageReceivedReadJwtCookie(context);
+            if (string.IsNullOrWhiteSpace(context.Token))
             {
-                context.Token = context.Request.Cookies["jwt"];
+                return;
             }
 
-            return Task.CompletedTask;
+            // Prefetch the signing key before validation: the JWT key
+            // resolver hook is synchronous, so the async (throttled) JWKS
+            // fetch happens here. Any miss becomes a clean 401 (Fail),
+            // never a 500.
+            if (!JwtTokenHeader.TryParse(context.Token, out var alg, out var kid))
+            {
+                context.Fail("Malformed JWT header.");
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(kid))
+            {
+                context.Fail("RS256 token without a kid.");
+                return;
+            }
+
+            var result = await jwks.EnsureLoadedAsync(kid!, context.HttpContext.RequestAborted);
+            if (result is not JwksLoadResult.Found)
+            {
+                context.Fail($"Signing key '{kid}' is not available (JWKS: {result}).");
+            }
         }
     };
     options.TokenValidationParameters = new TokenValidationParameters
     {
-        ValidateIssuer = false,
-        ValidateAudience = false,
+        ValidateIssuer = true,
+        ValidIssuer = authJwks.Issuer,
+        ValidateAudience = true,
+        ValidAudience = authJwks.Audience,
         ValidateLifetime = true,
         ValidateIssuerSigningKey = true,
-        IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtOptions.Key))
+        ClockSkew = TimeSpan.FromSeconds(jwt.ClockSkewSeconds),
+        // Note: inbound claim mapping (sub -> ClaimTypes.NameIdentifier) is
+        // handler-level, not configurable through TokenValidationParameters;
+        // the owner is therefore read explicitly from "sub" with the mapped
+        // NameIdentifier as the documented fallback (CurrentOwner in
+        // ModelsApiController). A test pins the sub-based resolution.
+        // The kid arrives from the JWS header (third resolver parameter) —
+        // no dependency on the concrete SecurityToken type, which differs
+        // between the IdentityModel 7.x (middleware) and 8.x (app) lines.
+        IssuerSigningKeyResolver = (token, securityToken, kid, parameters) =>
+            kid is not null
+            && jwks.Resolve(kid) is SecurityKey key
+                ? new List<SecurityKey> { key }
+                : new List<SecurityKey>()
     };
 });
 
 var app = builder.Build();
 
-using (var scope = app.Services.CreateScope())
-{
-    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-    db.Database.Migrate();
-}
+// Fail-fast validation of the options the web process needs. It runs right
+// after the build (not before) on purpose: that is the first moment the
+// WebApplicationFactory test stand's in-memory overrides are visible to the
+// app configuration. In production this still fails fast — before any
+// request is served.
+ReadJwtOptions(builder.Configuration);
+ReadAuthJwksOptions(builder.Configuration);
+ReadMinioOptions(builder.Configuration);
+
+// See RequireJwksProvider above: the JwtBearer options actions (and with
+// them the JWKS-validated scheme) only run on the first authentication
+// request, so assigning the provider here is always in time.
+jwksProvider = app.Services.GetRequiredService<JwksKeyProvider>();
 
 try
 {
@@ -337,13 +453,23 @@ static bool RequiresAuthorization(HttpContext context)
 // Non-/api paths keep the legacy challenge behavior untouched.
 app.Use(async (context, next) =>
 {
-    if (
-        context.Request.Path.StartsWithSegments("/api")
-        // Only endpoints that actually require authentication ([AllowAnonymous]
-        // probes such as /api/health are left alone).
-        && RequiresAuthorization(context))
+    // Only endpoints that actually require authentication ([AllowAnonymous]
+    // probes such as /api/health are left alone).
+    if (context.Request.Path.StartsWithSegments("/api") && RequiresAuthorization(context))
     {
-        var authResult = await context.AuthenticateAsync(JwtBearerDefaults.AuthenticationScheme);
+        // Step 4.3a: pick the scheme from the token's JOSE header — the
+        // legacy HS256 (default) or the RS256 from the Auth service. A
+        // malformed token falls back to the legacy scheme and fails there.
+        var scheme = JwtSchemes.ForToken(context.Request.Cookies[AuthCookie.Name]);
+        var authResult = await context.AuthenticateAsync(scheme);
+
+        // .NET 8's AuthenticateAsync(scheme) does not assign context.User;
+        // without it UseAuthorization would challenge even on success.
+        if (authResult.Succeeded && authResult.Principal is not null)
+        {
+            context.User = authResult.Principal;
+        }
+
         if (!authResult.Succeeded)
         {
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
@@ -387,3 +513,72 @@ static IReadOnlyList<string> ParseAllowedExtensions(string? raw)
         .Distinct(StringComparer.OrdinalIgnoreCase)
         .ToArray();
 }
+
+/// <summary>
+/// Reads and validates the HS256 options. Single source of truth for what a
+/// valid configuration is: called by the DI registration, the JwtBearer
+/// configure actions and the post-build startup validation.
+/// </summary>
+static JwtOptions ReadJwtOptions(IConfiguration configuration)
+{
+    var jwt = configuration.GetSection(JwtOptions.SectionName).Get<JwtOptions>()
+        ?? throw new InvalidOperationException("JWT configuration is missing.");
+    if (string.IsNullOrWhiteSpace(jwt.Key))
+    {
+        throw new InvalidOperationException("JWT key is not configured!");
+    }
+    if (string.IsNullOrWhiteSpace(jwt.Issuer) || string.IsNullOrWhiteSpace(jwt.Audience))
+    {
+        // Step 4.3a: the HS256 tokens carry iss/aud and both are validated on
+        // read, so the values must exist (they were in the config before, unused).
+        throw new InvalidOperationException("JWT issuer and audience are not configured!");
+    }
+    if (jwt.ClockSkewSeconds < 0)
+    {
+        throw new InvalidOperationException("Jwt:ClockSkewSeconds must be >= 0.");
+    }
+
+    return jwt;
+}
+
+static AuthJwksOptions ReadAuthJwksOptions(IConfiguration configuration)
+{
+    var authJwks = configuration.GetSection(AuthJwksOptions.SectionName).Get<AuthJwksOptions>()
+        ?? new AuthJwksOptions();
+    if (string.IsNullOrWhiteSpace(authJwks.Url))
+    {
+        throw new InvalidOperationException("AuthJwks:Url is not configured.");
+    }
+    if (authJwks.RequireHttps
+        && !authJwks.Url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+    {
+        throw new InvalidOperationException("AuthJwks:RequireHttps is true but AuthJwks:Url is not https.");
+    }
+    if (string.IsNullOrWhiteSpace(authJwks.Issuer) || string.IsNullOrWhiteSpace(authJwks.Audience))
+    {
+        throw new InvalidOperationException("AuthJwks issuer and audience are not configured.");
+    }
+    if (authJwks.RefreshThrottleSeconds < 0)
+    {
+        throw new InvalidOperationException("AuthJwks:RefreshThrottleSeconds must be >= 0.");
+    }
+
+    return authJwks;
+}
+
+static MinioOptions ReadMinioOptions(IConfiguration configuration)
+{
+    var minio = configuration.GetSection(MinioOptions.SectionName).Get<MinioOptions>()
+        ?? throw new InvalidOperationException("Minio configuration is missing.");
+    if (string.IsNullOrWhiteSpace(minio.Endpoint)
+        || string.IsNullOrWhiteSpace(minio.AccessKey)
+        || string.IsNullOrWhiteSpace(minio.SecretKey))
+    {
+        throw new InvalidOperationException("Minio configuration is invalid.");
+    }
+
+    return minio;
+}
+
+// Entry-point marker for WebApplicationFactory (integration tests).
+public partial class Program;

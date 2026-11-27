@@ -45,10 +45,32 @@ services:
     networks:
       - app-network
 
+  # One-shot monolith DB migration (step 4.3a, AGENTS.md §5): applies the EF
+  # migrations BEFORE the web process starts; the web container itself never
+  # migrates anymore. Carries only the connection string (the `migrate`
+  # command is handled before the JWT/JWKS/Minio validation in Program.cs).
+  monolith-migrate:
+    build:
+      context: ../legacy/monolith
+    restart: "no"
+    depends_on:
+      # One-shot: it must not race a fresh Postgres (the web container used to
+      # retry via restart; a one-shot with restart:"no" would just die).
+      db:
+        condition: service_healthy
+    environment:
+      ConnectionStrings__DefaultConnection: Host=db;Port=5432;Database=${DB_NAME};Username=${DB_USER};Password=${DB_PASSWORD}
+    # The image ENTRYPOINT is [dotnet, LoginAndReg.dll]: the command is
+    # appended to it (same pattern as auth-migrate).
+    command: ["migrate"]
+    networks:
+      - app-network
+
   web:
     build:
       context: ../legacy/monolith
-    # The app migrates the DB on startup; restart until PostgreSQL is ready.
+    # Migrations run in monolith-migrate (see above); restart until
+    # PostgreSQL is ready.
     restart: unless-stopped
     # No published ports: reachable only inside app-network (via gateway).
     environment:
@@ -61,6 +83,17 @@ services:
       - Jwt__Issuer=${JWT_ISSUER}
       - Jwt__Audience=${JWT_AUDIENCE}
       - Jwt__ExpiryMinutes=60
+      # Clock skew for JWT lifetime validation, both schemes (step 4.3a).
+      - Jwt__ClockSkewSeconds=${JWT_CLOCK_SKEW_SECONDS:-30}
+      # RS256 tokens from the Auth service are validated against its JWKS
+      # (step 4.3a, ADR 0018). Issuer/audience reuse the Auth values so the
+      # signing and validating sides can never drift apart. JWKS is fetched
+      # lazily — a down Auth service does not block startup or /api/health.
+      - AuthJwks__Url=${MONOLITH_JWKS_URL:-http://auth:8080/.well-known/jwks.json}
+      - AuthJwks__Issuer=${AUTH_JWT_ISSUER:-3dpaint.auth}
+      - AuthJwks__Audience=${AUTH_JWT_AUDIENCE:-3dpaint}
+      - AuthJwks__RequireHttps=${MONOLITH_JWKS_REQUIRE_HTTPS:-false}
+      - AuthJwks__RefreshThrottleSeconds=${MONOLITH_JWKS_REFRESH_THROTTLE_SECONDS:-30}
       - Minio__Endpoint=storage:9000
       - Minio__AccessKey=${MINIO_ROOT_USER}
       - Minio__SecretKey=${MINIO_ROOT_PASSWORD}
@@ -77,8 +110,13 @@ services:
       # is .glb (the SPA viewer is GLB-only).
       - AllowedUploadExtensions=${ALLOWED_UPLOAD_EXTENSIONS:-.glb}
     depends_on:
-      - db
-      - storage
+      db:
+        condition: service_started
+      storage:
+        condition: service_started
+      # Migrations must have finished before the web process starts (step 4.3a).
+      monolith-migrate:
+        condition: service_completed_successfully
     networks:
       - app-network
 
@@ -132,6 +170,13 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD}
     volumes:
       - pgdata:/var/lib/postgresql/data
+    # Same pattern as auth-db: lets the one-shot monolith-migrate wait for a
+    # ready server on a cold start (fresh volumes).
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
     networks:
       - app-network
 

@@ -24,13 +24,13 @@ public class UserFilesController : ControllerBase
     [HttpGet]
     public async Task<IActionResult> GetMyFiles(CancellationToken cancellationToken)
     {
-        var userId = await GetCurrentUserIdAsync(cancellationToken);
-        if (userId is null)
+        var owner = await GetCurrentOwnerAsync(cancellationToken);
+        if (owner is null)
         {
             return Unauthorized();
         }
 
-        var files = await _fileStorageService.GetUserFilesAsync(userId.Value, cancellationToken);
+        var files = await _fileStorageService.GetUserFilesAsync(owner, cancellationToken);
         var response = new List<object>(files.Count);
 
         foreach (var file in files)
@@ -67,15 +67,15 @@ public class UserFilesController : ControllerBase
             return BadRequest(new { message = "Файл не передан." });
         }
 
-        var userId = await GetCurrentUserIdAsync(cancellationToken);
-        if (userId is null)
+        var owner = await GetCurrentOwnerAsync(cancellationToken);
+        if (owner is null)
         {
             return Unauthorized();
         }
 
         try
         {
-            var saved = await _fileStorageService.UploadFileAsync(userId.Value, file, cancellationToken);
+            var saved = await _fileStorageService.UploadFileAsync(owner, file, cancellationToken);
             var fileUrl = await _fileStorageService.GetFileUrlAsync(saved.storage_path, cancellationToken);
             var thumbnailUrl = saved.thumbnail_path is null
                 ? null
@@ -112,17 +112,10 @@ public class UserFilesController : ControllerBase
         }
     }
 
-    private async Task<int?> GetCurrentUserIdAsync(CancellationToken cancellationToken)
-    {
-        var login = User.FindFirstValue(ClaimTypes.Name);
-        if (string.IsNullOrWhiteSpace(login))
-        {
-            return null;
-        }
-
-        return await _context.Users
-            .Where(u => u.login == login)
-            .Select(u => (int?)u.id)
-            .SingleOrDefaultAsync(cancellationToken);
-    }
+    /// <summary>
+    /// The owner as a string (step 4.3a) — see
+    /// <see cref="CurrentOwner"/>. Null means unauthenticated.
+    /// </summary>
+    private Task<string?> GetCurrentOwnerAsync(CancellationToken cancellationToken)
+        => CurrentOwner.ResolveAsync(_context, User, cancellationToken);
 }

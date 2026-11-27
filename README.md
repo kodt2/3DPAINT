@@ -164,9 +164,15 @@ production-дефолт намеренно консервативен (повт�
 доверенного прокси (`KNOWN_PROXIES` / `KNOWN_NETWORKS`, по умолчанию
 пусты).
 
-Типы API-клиента генерируются из OpenAPI монолита (`npm run gen:api` в
-`frontend/`, требует работающий dev-стэк; upload-эндпоинт в документе пока не
-описан — TD-22).
+Типы API-клиента генерируются из **двух** OpenAPI-документов (`npm run gen:api`
+в `frontend/`, требует работающий dev-стэк `make up`): `/api/auth/**` и
+`/api/me` — из Auth, остальное — из монолита; скрипт
+`frontend/scripts/gen-api.mjs` склеивает документ и вызывает
+`openapi-typescript`. Gateway `/swagger` не маршрутизирует (3d.2), поэтому в
+dev оба документа доступны по loopback-портам из `infra/compose.override.yml`
+(`AUTH_DEV_PORT`/`WEB_DEV_PORT`, дефолты 18096/18097). `npm run gen:api:check`
+— сравнение регенерации с закоммиченным `src/api/schema.ts` (CI-гигиена).
+Upload-эндпоинт в документе пока не описан — TD-22.
 
 ## Публичный S3 (presigned-ссылки и браузерная загрузка)
 
