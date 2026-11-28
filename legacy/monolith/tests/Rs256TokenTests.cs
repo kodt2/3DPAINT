@@ -15,6 +15,10 @@ public sealed class Rs256TokenTests : IAsyncLifetime
 {
     private const string Kid = "monolith-test-key-1";
 
+    // The Auth service issues the user id as a canonical lower-case GUID
+    // string in the sub claim (step 4.3a.1).
+    private const string Sub = "01970000-0000-7000-8000-000000000001";
+
     private readonly JwksTestServer _jwks;
     private readonly MonolithAppFactory _factory;
     private readonly RsaSecurityKey _key;
@@ -44,7 +48,7 @@ public sealed class Rs256TokenTests : IAsyncLifetime
     [Fact]
     public async Task Rs256_ValidToken_IsAccepted()
     {
-        var token = TestTokens.MakeRs256(_key, Kid, sub: "42", login: "authuser");
+        var token = TestTokens.MakeRs256(_key, Kid, sub: Sub, login: "authuser");
 
         var response = await ApiHelpers.Send(_factory, HttpMethod.Get, "/api/me", jwtToken: token);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -66,7 +70,7 @@ public sealed class Rs256TokenTests : IAsyncLifetime
         // The header kid matches the JWKS entry, but the payload is signed
         // with a different key: the key resolved by kid must not verify it.
         var otherKey = TestTokens.NewRsaKey();
-        var token = TestTokens.MakeRs256(otherKey, Kid, sub: "42", login: "authuser");
+        var token = TestTokens.MakeRs256(otherKey, Kid, sub: Sub, login: "authuser");
 
         var response = await ApiHelpers.Send(_factory, HttpMethod.Get, "/api/me", jwtToken: token);
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
@@ -75,7 +79,7 @@ public sealed class Rs256TokenTests : IAsyncLifetime
     [Fact]
     public async Task Rs256_WrongIssuer_Returns401()
     {
-        var token = TestTokens.MakeRs256(_key, Kid, sub: "42", login: "authuser", issuer: "3dpaint.wrong");
+        var token = TestTokens.MakeRs256(_key, Kid, sub: Sub, login: "authuser", issuer: "3dpaint.wrong");
         var response = await ApiHelpers.Send(_factory, HttpMethod.Get, "/api/me", jwtToken: token);
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }
@@ -83,7 +87,7 @@ public sealed class Rs256TokenTests : IAsyncLifetime
     [Fact]
     public async Task Rs256_WrongAudience_Returns401()
     {
-        var token = TestTokens.MakeRs256(_key, Kid, sub: "42", login: "authuser", audience: "3dpaint.wrong");
+        var token = TestTokens.MakeRs256(_key, Kid, sub: Sub, login: "authuser", audience: "3dpaint.wrong");
         var response = await ApiHelpers.Send(_factory, HttpMethod.Get, "/api/me", jwtToken: token);
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }
@@ -91,7 +95,7 @@ public sealed class Rs256TokenTests : IAsyncLifetime
     [Fact]
     public async Task Rs256_ExpiredToken_Returns401()
     {
-        var token = TestTokens.MakeRs256(_key, Kid, sub: "42", login: "authuser",
+        var token = TestTokens.MakeRs256(_key, Kid, sub: Sub, login: "authuser",
             expires: DateTimeOffset.UtcNow.AddMinutes(-5));
         var response = await ApiHelpers.Send(_factory, HttpMethod.Get, "/api/me", jwtToken: token);
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);

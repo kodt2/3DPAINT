@@ -63,7 +63,7 @@ public sealed class RefreshTokenService
     /// returns the raw token. The raw value is returned once and never stored;
     /// only its hash is persisted.
     /// </summary>
-    public async Task<string> CreateForUserAsync(int userId, CancellationToken ct)
+    public async Task<string> CreateForUserAsync(Guid userId, CancellationToken ct)
     {
         var raw = GenerateRawToken();
         var now = DateTime.UtcNow;
@@ -130,7 +130,12 @@ public sealed class RefreshTokenService
             // Lost the race (or the row changed between the read and the
             // update). Re-read and classify: a just-replaced token is a
             // harmless duplicate; an older one is a replay.
+            // AsNoTracking: the row is already tracked from the first read, and
+            // EF Core returns the tracked instance without refreshing its
+            // values — a tracked re-read would see the stale pre-claim state
+            // (ReplacedAt = NULL) and misclassify the duplicate as a replay.
             var fresh = await _db.RefreshTokens
+                .AsNoTracking()
                 .Include(t => t.User)
                 .FirstOrDefaultAsync(t => t.TokenHash == hash, ct);
             if (fresh is null || fresh.RevokedAt is not null || fresh.ExpiresAt <= now)
@@ -230,7 +235,18 @@ public sealed class RefreshTokenService
         DateTime now,
         CancellationToken ct)
     {
-        if (now - row.ReplacedAt! <= _options.ReuseGracePeriod)
+        // Never revoke a family without positive evidence that the token was
+        // replaced: a NULL ReplacedAt is not a replay (defensive; both call
+        // sites normally guarantee a non-null value).
+        if (row.ReplacedAt is null)
+        {
+            _logger.LogWarning(
+                "Cannot classify refresh token for family {FamilyId} of user {UserId}: replaced-at is missing; the family is kept",
+                row.FamilyId, row.UserId);
+            return new RefreshRotationResult(RefreshRotationOutcome.Invalid, null, null);
+        }
+
+        if (now - row.ReplacedAt.Value <= _options.ReuseGracePeriod)
         {
             _logger.LogDebug(
                 "Duplicate refresh request for a recently replaced token (family {FamilyId}, user {UserId}); the family is kept",

@@ -19,7 +19,7 @@ public static class RoleSeeder
         {
             // NormalizedName must match UserManager's normalization (upper-case
             // by default) — AddToRoleAsync looks the role up by it.
-            db.Roles.Add(new IdentityRole<int>
+            db.Roles.Add(new IdentityRole<Guid>
             {
                 Name = DefaultRole,
                 NormalizedName = DefaultRole.ToUpperInvariant(),

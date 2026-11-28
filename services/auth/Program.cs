@@ -35,7 +35,7 @@ var connectionString = builder.Configuration.GetConnectionString("AuthConnection
     ?? throw new InvalidOperationException("Connection string 'AuthConnection' is not configured.");
 builder.Services.AddDbContext<AuthDbContext>(options => options.UseNpgsql(connectionString));
 builder.Services
-    .AddIdentity<AuthUser, IdentityRole<int>>(options =>
+    .AddIdentity<AuthUser, IdentityRole<Guid>>(options =>
     {
         // The password policy is enforced by the auth service itself (min length
         // + common-passwords list, ADR 0018); relax Identity's defaults so a

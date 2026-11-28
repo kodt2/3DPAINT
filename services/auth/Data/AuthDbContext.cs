@@ -10,7 +10,7 @@ namespace Auth.Data;
 /// database). Identity tables (Users, Roles, join tables) plus the
 /// RefreshTokens table (ADR 0018).
 /// </summary>
-public class AuthDbContext : IdentityDbContext<AuthUser, IdentityRole<int>, int>
+public class AuthDbContext : IdentityDbContext<AuthUser, IdentityRole<Guid>, Guid>
 {
     public AuthDbContext(DbContextOptions<AuthDbContext> options)
         : base(options)

@@ -35,7 +35,8 @@ public sealed class MeController : ControllerBase
     {
         var idClaim = User.FindFirstValue(ClaimTypes.NameIdentifier)
             ?? User.FindFirstValue(JwtRegisteredClaimNames.Sub);
-        if (idClaim is null || !int.TryParse(idClaim, out var id))
+        // sub is the version-7 Guid user key as a lower-case string (4.3a.1).
+        if (idClaim is null || !Guid.TryParse(idClaim, out var id))
         {
             return Problem(
                 statusCode: StatusCodes.Status401Unauthorized,

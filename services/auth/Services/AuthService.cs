@@ -84,7 +84,7 @@ public sealed class AuthService : IAuthService
         return user;
     }
 
-    public async Task<AuthUser?> GetByIdAsync(int id, CancellationToken ct)
+    public async Task<AuthUser?> GetByIdAsync(Guid id, CancellationToken ct)
         => await _userManager.FindByIdAsync(id.ToString());
 
     private void ValidatePassword(string password)

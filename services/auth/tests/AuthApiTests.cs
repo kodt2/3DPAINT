@@ -30,7 +30,17 @@ public sealed class AuthApiTests
 
     // --- helpers -----------------------------------------------------------
 
-    private sealed record UserDto(int id, string? login, string? fullName, DateOnly? birthDate);
+    private sealed record UserDto(string id, string? login, string? fullName, DateOnly? birthDate);
+
+    /// <summary>Decodes the JWT payload segment (no signature check) for claim assertions.</summary>
+    private static JsonElement DecodeJwtPayload(string jwt)
+    {
+        var payload = jwt.Split('.')[1];
+        payload = payload.Replace('-', '+').Replace('_', '/');
+        payload += new string('=', (4 - payload.Length % 4) % 4);
+        var json = Convert.FromBase64String(payload);
+        return JsonDocument.Parse(json).RootElement;
+    }
 
     private static string StrongPassword => "Str0ng-Passw0rd!";
 
@@ -208,22 +218,30 @@ public sealed class AuthApiTests
             $"register returned {(int)response.StatusCode}, body: {body}");
 
         var dto = JsonSerializer.Deserialize<UserDto>(body, JsonOpts)!;
-        Assert.True(dto.id > 0, "the added id must be a positive user id");
+        // The id is the version-7 user key as a canonical lower-case string
+        // (8-4-4-4-12, version nibble '7' — step 4.3a.1).
+        Assert.Matches("^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", dto.id);
         Assert.Equal(login, dto.login);
         Assert.Equal("Test User", dto.fullName);
         Assert.Equal(new DateOnly(1990, 1, 1), dto.birthDate);
 
         // The RS256 access token is in the http-only "jwt" cookie (monolith flags).
+        var jwtValue = GetSetCookieValue(response, "jwt")!;
         AssertCookieAttributes(GetSetCookieHeader(response, "jwt")!, "jwt", "SameSite=Lax", "/");
+
+        // The token's sub is the same id, so the SPA and the monolith agree on
+        // the owner string (the monolith stores file owners as strings).
+        var payload = DecodeJwtPayload(jwtValue);
+        Assert.Equal(dto.id, payload.GetProperty("sub").GetString());
 
         // The opaque refresh token is in the path-restricted, strict "rt" cookie.
         AssertCookieAttributes(GetSetCookieHeader(response, "rt")!, "rt", "SameSite=Strict", "/api/auth");
 
-        // The refresh token is opaque: not a JWT (no dots) and not the numeric id.
+        // The refresh token is opaque: not a JWT (no dots) and not the id.
         var rtValue = GetSetCookieValue(response, "rt")!;
         Assert.False(string.IsNullOrWhiteSpace(rtValue));
         Assert.DoesNotContain('.', rtValue);
-        Assert.NotEqual(dto.id.ToString(), rtValue);
+        Assert.NotEqual(dto.id, rtValue);
     }
 
     [Fact]

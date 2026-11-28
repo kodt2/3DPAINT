@@ -12,6 +12,10 @@ public sealed class JwksUnavailableTests : IAsyncLifetime
 {
     private const string DeadJwksUrl = "http://127.0.0.1:9/.well-known/jwks.json";
 
+    // The Auth service issues the user id as a canonical lower-case GUID
+    // string in the sub claim (step 4.3a.1).
+    private const string Sub = "01970000-0000-7000-8000-000000000001";
+
     private readonly MonolithAppFactory _factory = new(DeadJwksUrl);
 
     public async Task InitializeAsync()
@@ -36,7 +40,7 @@ public sealed class JwksUnavailableTests : IAsyncLifetime
     public async Task Rs256_WithDeadJwks_Returns401_Not500()
     {
         var key = TestTokens.NewRsaKey();
-        var token = TestTokens.MakeRs256(key, "kid-dead", sub: "42", login: "authuser");
+        var token = TestTokens.MakeRs256(key, "kid-dead", sub: Sub, login: "authuser");
 
         var response = await ApiHelpers.Send(_factory, HttpMethod.Get, "/api/me", jwtToken: token);
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);

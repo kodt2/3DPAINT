@@ -3,11 +3,11 @@ namespace Auth.Models;
 /// <summary>
 /// The auth user as seen by the SPA. Same shape as the monolith's
 /// <c>AuthUserDto</c> (<c>login</c>, <c>fullName</c>, <c>birthDate</c>) plus the
-/// stable <c>id</c> (added in step 4.1; the monolith's id stays int, so the
-/// generated SPA client stays compatible — see the step report).
+/// stable <c>id</c> — the version-7 Guid user key as a canonical lower-case
+/// string (step 4.3a.1).
 /// </summary>
 public sealed record AuthUserDto(
-    int Id,
+    string Id,
     string? Login,
     string? FullName,
     DateOnly? BirthDate);
@@ -16,5 +16,5 @@ public sealed record AuthUserDto(
 public static class AuthUserDtoMap
 {
     public static AuthUserDto ToDto(Entities.AuthUser user)
-        => new(user.Id, user.UserName, user.FullName, user.BirthDate);
+        => new(user.Id.ToString(), user.UserName, user.FullName, user.BirthDate);
 }
