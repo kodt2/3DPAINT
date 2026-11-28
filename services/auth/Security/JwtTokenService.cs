@@ -32,7 +32,7 @@ public sealed class JwtTokenService
             ?? throw new InvalidOperationException("The current RSA signing key is not loaded.");
 
         var now = DateTime.UtcNow;
-        var expires = now.AddMinutes(_options.ExpiryMinutes);
+        var expires = now.Add(_options.GetLifetime());
 
         var headerJson = JsonSerializer.Serialize(
             new { alg = "RS256", typ = "JWT", kid = current.Kid },

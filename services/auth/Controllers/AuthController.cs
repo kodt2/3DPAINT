@@ -43,7 +43,7 @@ public sealed class AuthController : ControllerBase
         _jwt = jwt;
         _refresh = refresh;
         _refreshOptions = refreshOptions.Value;
-        _jwtLifetime = TimeSpan.FromMinutes(jwtOptions.Value.ExpiryMinutes);
+        _jwtLifetime = jwtOptions.Value.GetLifetime();
     }
 
     /// <summary>POST /api/auth/login — validates credentials and sets the auth cookies.</summary>
