@@ -13,6 +13,9 @@ var upstreamAddress = builder.Configuration["Upstream:Monolith"]
     ?? throw new InvalidOperationException("Upstream:Monolith is not configured.");
 var frontendAddress = builder.Configuration["Upstream:Frontend"]
     ?? throw new InvalidOperationException("Upstream:Frontend is not configured.");
+// The Auth Service (step 4.3b): /api/auth/** and /api/me are routed to it.
+var authAddress = builder.Configuration["Upstream:Auth"]
+    ?? throw new InvalidOperationException("Upstream:Auth is not configured.");
 var maxUploadBytes = builder.Configuration.GetValue("MaxUploadBytes", 100 * 1024 * 1024);
 
 // Envelope headroom (ADR 0015): the body limit applies to the whole multipart
@@ -69,15 +72,36 @@ builder.Services
 builder.Services.AddHealthChecks()
     .AddCheck<UpstreamHealthCheck>(UpstreamHealthCheck.Name, tags: new[] { UpstreamHealthCheck.Tag });
 
-// Route scheme (ADR 0011, updated in step 3d.2). Only explicit routes exist
-// (no catch-all): the Razor UI was removed from the monolith, so unknown
-// paths are no longer proxied to it. The gateway returns 404 for anything
-// that is not /api/**, /spa/** or /assets/** (MapFallback below). Old Razor
-// page routes (/Home/**, /Account/**) are 302-redirected to /spa/ by
-// LegacyRazorRedirectMiddleware before routing.
-//   1. /api/**    -> monolith (JSON API, incl. /api/files/upload)
-//   2. /assets/** -> frontend (hashed build assets, immutable caching)
-//   3. /spa/**    -> frontend (SPA pages, prefix stripped)
+// Route scheme (ADR 0011, updated in steps 3d.2 and 4.3b). Only explicit
+// routes exist (no catch-all): the Razor UI was removed from the monolith,
+// so unknown paths are no longer proxied to it. The gateway returns 404 for
+// anything that is not /api/**, /spa/** or /assets/** (MapFallback below).
+// Old Razor page routes (/Home/**, /Account/**) are 302-redirected to /spa/
+// by LegacyRazorRedirectMiddleware before routing.
+//   1. /api/auth/** -> auth (Auth Service, step 4.3b)
+//   2. /api/me      -> auth (Auth Service, step 4.3b)
+//   3. /api/**      -> monolith (JSON API, incl. /api/files/upload)
+//   4. /assets/**   -> frontend (hashed build assets, immutable caching)
+//   5. /spa/**      -> frontend (SPA pages, prefix stripped)
+// The monolith still implements the same /api/auth/* and /api/me paths
+// (legacy AuthApiController); from this step they are unreachable from
+// outside and are removed in step 4.3c.
+var apiAuthRoute = new RouteConfig
+{
+    RouteId = "api-auth-to-auth",
+    ClusterId = "auth",
+    Order = 0,
+    Match = new RouteMatch { Path = "/api/auth/{**catch-all}" },
+    Transforms = StandardTransforms(),
+};
+var apiMeRoute = new RouteConfig
+{
+    RouteId = "api-me-to-auth",
+    ClusterId = "auth",
+    Order = 0,
+    Match = new RouteMatch { Path = "/api/me" },
+    Transforms = StandardTransforms(),
+};
 var apiRoute = new RouteConfig
 {
     RouteId = "api-to-monolith",
@@ -120,6 +144,21 @@ var monolithCluster = new ClusterConfig
         ["primary"] = new DestinationConfig { Address = upstreamAddress },
     },
 };
+var authCluster = new ClusterConfig
+{
+    ClusterId = "auth",
+    // The Auth Service listens on plain HTTP/1.1 (Kestrel default), same as
+    // the monolith.
+    HttpRequest = new ForwarderRequestConfig
+    {
+        Version = new Version(1, 1),
+        VersionPolicy = HttpVersionPolicy.RequestVersionOrLower,
+    },
+    Destinations = new Dictionary<string, DestinationConfig>
+    {
+        ["primary"] = new DestinationConfig { Address = authAddress },
+    },
+};
 var frontendCluster = new ClusterConfig
 {
     ClusterId = "frontend",
@@ -135,8 +174,8 @@ var frontendCluster = new ClusterConfig
     },
 };
 builder.Services.AddReverseProxy().LoadFromMemory(
-    new[] { apiRoute, assetsRoute, spaRoute },
-    new[] { monolithCluster, frontendCluster });
+    new[] { apiAuthRoute, apiMeRoute, apiRoute, assetsRoute, spaRoute },
+    new[] { monolithCluster, authCluster, frontendCluster });
 
 // Per-client key for the auth rate limit (ADR 0011). By default no proxy is
 // trusted: the client key is the socket peer and X-Forwarded-For is ignored.
