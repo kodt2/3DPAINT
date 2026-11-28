@@ -325,13 +325,102 @@ public sealed class GatewayTests : IDisposable
         Assert.Null(_upstream.LastRequestPath);
     }
 
-    private static WebApplicationFactory<Program> CreateFactory(string upstreamAddress, string frontendAddress)
+    private static WebApplicationFactory<Program> CreateFactory(
+        string upstreamAddress,
+        string frontendAddress,
+        string? authAddress = null)
         => new TestAppFactory()
             .WithWebHostBuilder(builder =>
             {
                 builder.UseSetting("Upstream:Monolith", upstreamAddress);
                 builder.UseSetting("Upstream:Frontend", frontendAddress);
+                // Required by the app (step 4.3b); unreachable unless a test
+                // points it at a stub.
+                builder.UseSetting("Upstream:Auth", authAddress ?? "http://127.0.0.1:1");
             });
+
+    [Fact]
+    public async Task Route_priority_auth_api_paths_go_to_auth()
+    {
+        using var frontend = new StubUpstream("frontend");
+        using var auth = new StubUpstream("auth");
+        using var factory = CreateFactory(_upstream.Url, frontend.Url, auth.Url);
+        var client = factory.CreateClient();
+
+        foreach (var path in new[] { "/api/auth/login", "/api/auth/register", "/api/auth/refresh", "/api/auth/logout", "/api/auth/anything/deeper" })
+        {
+            using var response = await client.GetAsync(path);
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Equal("auth-ok", await response.Content.ReadAsStringAsync());
+            Assert.Equal(path, auth.LastRequestPath);
+            Assert.Null(_upstream.LastRequestPath);
+            Assert.Null(frontend.LastRequestPath);
+        }
+    }
+
+    [Fact]
+    public async Task Route_priority_me_goes_to_auth()
+    {
+        using var frontend = new StubUpstream("frontend");
+        using var auth = new StubUpstream("auth");
+        using var factory = CreateFactory(_upstream.Url, frontend.Url, auth.Url);
+        var client = factory.CreateClient();
+
+        using var response = await client.GetAsync("/api/me");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("auth-ok", await response.Content.ReadAsStringAsync());
+        Assert.Equal("/api/me", auth.LastRequestPath);
+        Assert.Null(_upstream.LastRequestPath);
+    }
+
+    [Fact]
+    public async Task Route_me_lookalike_stays_on_monolith()
+    {
+        // The /api/me route must match the exact path, not a prefix:
+        // /api/meetings (a hypothetical monolith route) must not leak to Auth.
+        using var frontend = new StubUpstream("frontend");
+        using var auth = new StubUpstream("auth");
+        using var factory = CreateFactory(_upstream.Url, frontend.Url, auth.Url);
+        var client = factory.CreateClient();
+
+        using var response = await client.GetAsync("/api/meetings");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("monolith-ok", await response.Content.ReadAsStringAsync());
+        Assert.Equal("/api/meetings", _upstream.LastRequestPath);
+        Assert.Null(auth.LastRequestPath);
+    }
+
+    [Fact]
+    public async Task Auth_set_cookie_headers_pass_through_the_gateway_unchanged()
+    {
+        // Step 4.3b cookie-delivery check: the auth service sets the jwt
+        // cookie (Path=/) and the rt cookie (Path=/api/auth) in its response;
+        // the gateway must forward Set-Cookie verbatim (no path/flag rewrite),
+        // otherwise the SPA session breaks.
+        using var frontend = new StubUpstream("frontend");
+        using var auth = new StubUpstream("auth");
+        auth.SetResponse(
+            "/api/auth/login",
+            200,
+            "auth-ok",
+            ("Set-Cookie", "jwt=abc.def.ghi; Path=/; Max-Age=900; HttpOnly; Secure; SameSite=Lax"),
+            ("Set-Cookie", "rt=refresh-token-value; Path=/api/auth; Max-Age=2592000; HttpOnly; Secure; SameSite=Strict"));
+        using var factory = CreateFactory(_upstream.Url, frontend.Url, auth.Url);
+        var client = factory.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/api/auth/login");
+        request.Headers.Add("Origin", "http://localhost:8080");
+        request.Content = new StringContent("{}", System.Text.Encoding.UTF8, "application/json");
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var setCookies = response.Headers.GetValues("Set-Cookie").ToArray();
+        var joined = string.Join("\n", setCookies);
+        Assert.Contains(
+            "jwt=abc.def.ghi; Path=/; Max-Age=900; HttpOnly; Secure; SameSite=Lax", joined);
+        Assert.Contains(
+            "rt=refresh-token-value; Path=/api/auth; Max-Age=2592000; HttpOnly; Secure; SameSite=Strict", joined);
+    }
 
     public void Dispose() => _upstream.Dispose();
 }
@@ -356,6 +445,10 @@ public sealed class OriginCheckTests : IDisposable
             builder.UseSetting("WEB_PORT", "8080");
             builder.UseSetting("Upstream:Monolith", upstreamAddress);
             builder.UseSetting("Upstream:Frontend", "http://127.0.0.1:1");
+            // Required by the app (step 4.3b); tests that do not exercise the
+            // auth routes keep the auth upstream unreachable. Tests that do
+            // override it through the settings ("Upstream:Auth", stub.Url).
+            builder.UseSetting("Upstream:Auth", "http://127.0.0.1:1");
             foreach (var (key, value) in settings)
             {
                 builder.UseSetting(key, value);
@@ -419,6 +512,41 @@ public sealed class OriginCheckTests : IDisposable
         Assert.Contains("\"status\":403", body);
         Assert.Contains("\"title\":\"Forbidden\"", body);
         // The request must not have reached the upstream.
+        Assert.Null(_upstream.LastRequestPath);
+    }
+
+    [Fact]
+    public async Task Post_api_auth_login_with_matching_origin_reaches_auth_upstream()
+    {
+        // Step 4.3b: the auth routes must pass the same-origin check for
+        // normal SPA requests (a valid public Origin) — the check protects
+        // the auth endpoints, it must not block them.
+        using var auth = new StubUpstream("auth");
+        using var factory = CreateFactory(_upstream.Url, ("PublicOrigin", PublicOrigin), ("Upstream:Auth", auth.Url));
+        var client = factory.CreateClient();
+
+        var request = Mutation(HttpMethod.Post, "/api/auth/login");
+        request.Headers.Add("Origin", PublicOrigin);
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("/api/auth/login", auth.LastRequestPath);
+        Assert.Null(_upstream.LastRequestPath);
+    }
+
+    [Fact]
+    public async Task Post_api_auth_login_with_foreign_origin_returns_403_and_reaches_no_upstream()
+    {
+        using var auth = new StubUpstream("auth");
+        using var factory = CreateFactory(_upstream.Url, ("PublicOrigin", PublicOrigin), ("Upstream:Auth", auth.Url));
+        var client = factory.CreateClient();
+
+        var request = Mutation(HttpMethod.Post, "/api/auth/login");
+        request.Headers.Add("Origin", "http://evil.example");
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal(0, auth.CountOf("/api/auth/login"));
         Assert.Null(_upstream.LastRequestPath);
     }
 
@@ -634,6 +762,10 @@ public sealed class AuthRateLimitTests : IDisposable
             builder.UseSetting("WEB_PORT", "8080");
             builder.UseSetting("PublicOrigin", PublicOrigin);
             builder.UseSetting("Upstream:Monolith", upstreamAddress);
+            // Step 4.3b: /api/auth/** is routed to the auth cluster; point it
+            // at the same stub so the OK assertions (before the limit kicks in)
+            // succeed.
+            builder.UseSetting("Upstream:Auth", upstreamAddress);
             builder.UseSetting("Upstream:Frontend", "http://127.0.0.1:1");
             foreach (var (key, value) in settings)
             {
@@ -648,6 +780,119 @@ public sealed class AuthRateLimitTests : IDisposable
         request.Headers.Add("Origin", PublicOrigin);
         request.Content = new StringContent("{}", System.Text.Encoding.UTF8, "application/json");
         return request;
+    }
+
+    [Fact]
+    public async Task Post_refresh_beyond_limit_returns_429()
+    {
+        using var factory = CreateFactory(_upstream.Url, ("RATE_LIMIT_REFRESH_REQUESTS_PER_MINUTE", "2"));
+        var client = factory.CreateClient();
+
+        for (var i = 0; i < 2; i++)
+        {
+            using var ok = await client.SendAsync(AuthPost("/api/auth/refresh"));
+            Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
+        }
+
+        using var rejected = await client.SendAsync(AuthPost("/api/auth/refresh"));
+        Assert.Equal(HttpStatusCode.TooManyRequests, rejected.StatusCode);
+        Assert.Equal("application/problem+json", rejected.Content.Headers.ContentType?.MediaType);
+        var body = await rejected.Content.ReadAsStringAsync();
+        Assert.Contains("\"status\":429", body);
+        Assert.Equal(2, _upstream.CountOf("/api/auth/refresh"));
+    }
+
+    [Fact]
+    public async Task Refresh_uses_its_own_limit_even_when_login_limit_is_exhausted()
+    {
+        // The sliding-window bucket is per client (shared by all protected
+        // paths), but the LIMIT applied depends on the path. Here the
+        // login/register limit is 1 and the refresh limit is 2: after one
+        // login, further logins are rejected — yet refresh is still allowed
+        // because it is checked against its own higher limit. If refresh
+        // mistakenly used the login limit, the first refresh would already
+        // be a 429 (the shared bucket count is 1 >= 1).
+        using var factory = CreateFactory(
+            _upstream.Url,
+            ("RATE_LIMIT_REQUESTS_PER_MINUTE", "1"),
+            ("RATE_LIMIT_REFRESH_REQUESTS_PER_MINUTE", "2"));
+        var client = factory.CreateClient();
+
+        using var loginOk = await client.SendAsync(AuthPost("/api/auth/login"));
+        Assert.Equal(HttpStatusCode.OK, loginOk.StatusCode);
+
+        // The login/register limit (1) is now exhausted.
+        using var loginRejected = await client.SendAsync(AuthPost("/api/auth/login"));
+        Assert.Equal(HttpStatusCode.TooManyRequests, loginRejected.StatusCode);
+
+        // Refresh is checked against its own limit (2): the first one passes,
+        // the second exhausts the shared bucket.
+        using var refreshOne = await client.SendAsync(AuthPost("/api/auth/refresh"));
+        Assert.Equal(HttpStatusCode.OK, refreshOne.StatusCode);
+        using var refreshTwo = await client.SendAsync(AuthPost("/api/auth/refresh"));
+        Assert.Equal(HttpStatusCode.TooManyRequests, refreshTwo.StatusCode);
+    }
+
+    [Fact]
+    public async Task Refresh_default_limit_is_thirty_per_window()
+    {
+        // No explicit setting: refresh allows 30 requests per window, and the
+        // 31st is rejected. (Login would have rejected the 11th already.)
+        using var factory = CreateFactory(_upstream.Url);
+        var client = factory.CreateClient();
+
+        for (var i = 0; i < 30; i++)
+        {
+            using var ok = await client.SendAsync(AuthPost("/api/auth/refresh"));
+            Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
+        }
+
+        using var rejected = await client.SendAsync(AuthPost("/api/auth/refresh"));
+        Assert.Equal(HttpStatusCode.TooManyRequests, rejected.StatusCode);
+    }
+
+    [Fact]
+    public async Task Refresh_env_spelling_is_read()
+    {
+        // TD-24 class of bug: the env spelling must work, not only the
+        // PascalCase appsettings key.
+        var configEnvOnly = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["RATE_LIMIT_REFRESH_REQUESTS_PER_MINUTE"] = "42",
+            })
+            .Build();
+        Assert.Equal(
+            42,
+            AuthRateLimitMiddleware.ReadPositiveInt(
+                configEnvOnly,
+                AuthRateLimitMiddleware.RefreshRequestsPerMinuteSetting,
+                AuthRateLimitMiddleware.RefreshRequestsPerMinuteEnv,
+                AuthRateLimitMiddleware.DefaultRefreshRequestsPerMinute));
+
+        var configPascalOnly = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["RateLimitRefreshRequestsPerMinute"] = "7",
+            })
+            .Build();
+        Assert.Equal(
+            7,
+            AuthRateLimitMiddleware.ReadPositiveInt(
+                configPascalOnly,
+                AuthRateLimitMiddleware.RefreshRequestsPerMinuteSetting,
+                AuthRateLimitMiddleware.RefreshRequestsPerMinuteEnv,
+                AuthRateLimitMiddleware.DefaultRefreshRequestsPerMinute));
+
+        // Unset: the default is 30.
+        var configEmpty = new ConfigurationBuilder().Build();
+        Assert.Equal(
+            30,
+            AuthRateLimitMiddleware.ReadPositiveInt(
+                configEmpty,
+                AuthRateLimitMiddleware.RefreshRequestsPerMinuteSetting,
+                AuthRateLimitMiddleware.RefreshRequestsPerMinuteEnv,
+                AuthRateLimitMiddleware.DefaultRefreshRequestsPerMinute));
     }
 
     [Fact]
@@ -1099,7 +1344,7 @@ internal sealed class StubUpstream : IDisposable
     private readonly WebApplication _app;
     private readonly string _marker;
     private readonly List<string> _requestPaths = [];
-    private readonly ConcurrentDictionary<string, (int Status, string? Body)> _pathResponses =
+    private readonly ConcurrentDictionary<string, (int Status, string? Body, (string Name, string Value)[]? Headers)> _pathResponses =
         new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
@@ -1109,7 +1354,17 @@ internal sealed class StubUpstream : IDisposable
     /// </summary>
     public void SetStatus(string path, int status)
     {
-        _pathResponses[path] = (status, null);
+        _pathResponses[path] = (status, null, null);
+    }
+
+    /// <summary>
+    /// Makes the stub answer the given path with an explicit status, body and
+    /// response headers (step 4.3b: verifying that Set-Cookie from Auth
+    /// passes the Gateway through unchanged).
+    /// </summary>
+    public void SetResponse(string path, int status, string? body, params (string Name, string Value)[] headers)
+    {
+        _pathResponses[path] = (status, body, headers);
     }
 
     public StubUpstream(string marker)
@@ -1137,6 +1392,13 @@ internal sealed class StubUpstream : IDisposable
             if (_pathResponses.TryGetValue(path, out var configured))
             {
                 context.Response.StatusCode = configured.Status;
+                if (configured.Headers is not null)
+                {
+                    foreach (var (name, value) in configured.Headers)
+                    {
+                        context.Response.Headers.Append(name, value);
+                    }
+                }
                 return context.Response.WriteAsync(configured.Body ?? $"{_marker}-ok");
             }
 

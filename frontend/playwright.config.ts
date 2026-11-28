@@ -57,6 +57,9 @@ const baseURL = E2E_BASE_URL;
 
 export default defineConfig({
   testDir: './e2e',
+  // The short-token spec needs its own stand (5-second access tokens, see
+  // playwright.short.config.ts / Makefile `e2e-short`) and is excluded here.
+  testIgnore: ['**/short-token.spec.ts'],
   timeout: 30_000,
   retries: 0,
   reporter: 'list',

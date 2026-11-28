@@ -17,6 +17,19 @@ public sealed class JwtOptions
     public int ExpiryMinutes { get; set; } = 15;
 
     /// <summary>
+    /// Optional access-token lifetime in seconds. When set (positive), it
+    /// overrides <see cref="ExpiryMinutes">. Test-only knob: the e2e short-
+    /// token stand runs with 5 s access tokens to exercise the SPA's
+    /// refresh-on-401 flow through the real Gateway (step 4.3b).
+    /// </summary>
+    public int? ExpirySeconds { get; set; }
+
+    /// <summary>The effective access-token lifetime.</summary>
+    public TimeSpan GetLifetime() => ExpirySeconds is { } seconds and > 0
+        ? TimeSpan.FromSeconds(seconds)
+        : TimeSpan.FromMinutes(ExpiryMinutes);
+
+    /// <summary>
     /// Path to the current RSA private key (PKCS#8 PEM). Required.
     /// Development: generated on first start and persisted here (named volume).
     /// Production: operator-provided secret file; a missing key is a hard

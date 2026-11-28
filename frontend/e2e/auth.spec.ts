@@ -51,7 +51,9 @@ test('registering a taken login shows the 409 message', async ({ page }) => {
   await expect(page).toHaveURL(/\/spa\/login/);
 
   await registerViaUi(page, login);
-  await expect(page.getByRole('alert')).toContainText('Такой логин уже существует');
+  // Since step 4.3b registration is served by the Auth service through the
+  // Gateway; the monolith's old 409 wording is no longer reachable.
+  await expect(page.getByRole('alert')).toContainText('Логин уже занят');
   await expect(page).toHaveURL(/\/spa\/register/);
 });
 

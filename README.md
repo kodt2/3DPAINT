@@ -152,17 +152,24 @@ tестового стенда: свой compose-проект `3dpaint-e2e`, с�
 `make e2e E2E_PORT=18190 E2E_S3_PORT=19100 E2E_FILER_PORT=18898` Ручной прогон против уже
 поднятого стека: `cd frontend && E2E_BASE_URL=http://localhost:${WEB_PORT} npx playwright test`
 (лимит входа 10/60 с может сработать при повторных прогонах).
+**`make e2e-short`** (шаг 4.3b) — отдельный одноразовый стенд с токенами
+доступа **5 секунд** (`AUTH_JWT_EXPIRY_SECONDS=5`) и нулевым clock skew
+(`JWT_CLOCK_SKEW_SECONDS=0`): гоняет только `short-token.spec.ts`, где
+истёкший токен прозрачно обновляется через `POST /api/auth/refresh` без
+редиректа на логин.
 
-**Rate limiting входа (с шага 3c.1a, ADR 0011 §6.2).** Gateway ограничивает
-`POST /api/auth/login` и `POST /api/auth/register`: по умолчанию **10
-запросов на 60 секунд на клиента**, при превышении — `429`
-(ProblemDetails + `Retry-After`). Лимит настраивается env
-`RATE_LIMIT_REQUESTS_PER_MINUTE` / `RATE_LIMIT_WINDOW_SECONDS` —
-production-дефолт намеренно консервативен (повторные E2E-прогоны идут
-через тестовый стенд `make e2e` с временным лимитом 100/мин). Ключ
-клиента — IP прямого соединения; `X-Forwarded-For` учитывается только от
-доверенного прокси (`KNOWN_PROXIES` / `KNOWN_NETWORKS`, по умолчанию
-пусты).
+**Rate limiting аутентификации (с шага 3c.1a, ADR 0011 §6.2).** Gateway
+ограничивает `POST /api/auth/login` и `POST /api/auth/register`: по
+умолчанию **10 запросов на 60 секунд на клиента**, при превышении — `429`
+(ProblemDetails + `Retry-After`). С шага 4.3b в тот же слайдинг-окно
+попало `POST /api/auth/refresh` — но со **своим** более высоким лимитом
+(`RATE_LIMIT_REFRESH_REQUESTS_PER_MINUTE`, дефолт **30/60 с** на
+клиента): SPA шлёт refresh автоматически при каждом истечении токена
+доступа. Окно и ключ клиента общие: `RATE_LIMIT_WINDOW_SECONDS`, IP
+прямого соединения, `X-Forwarded-For` учитывается только от доверенного
+прокси (`KNOWN_PROXIES` / `KNOWN_NETWORKS`, по умолчанию пусты).
+production-дефолты намеренно консервативны (повторные E2E-прогоны идут
+через тестовые стенды с временным лимитом 100/мин).
 
 Типы API-клиента генерируются из **двух** OpenAPI-документов (`npm run gen:api`
 в `frontend/`, требует работающий dev-стэк `make up`): `/api/auth/**` и

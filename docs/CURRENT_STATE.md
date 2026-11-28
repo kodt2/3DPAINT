@@ -65,7 +65,7 @@
 |---|---|---|---|
 | `/` | GET | редирект на `/Account/Auth` | публичный |
 | `/Account/Auth` | GET | страница логина/регистрации (Razor) | публичный |
-| `/Account/Login` | POST | проверка пароля (SHA256(salt+password)), выдаёт JWT (60 мин) в httpOnly-cookie `jwt`; JSON `{success, message, redirectUrl:"/Home/Index"}` | публичный |
+| `/Account/Login` | POST | проверка пароля (SHA-256(password + соль), см. ниже), выдаёт JWT (60 мин) в httpOnly-cookie `jwt`; JSON `{success, message, redirectUrl:"/Home/Index"}` | публичный |
 | `/Account/Register` | POST | валидация (FluentValidation: FullName/BirthDate/Login/Password, Password≥6), создаёт `User`+`Person`; JSON `{success, message}` | публичный |
 | `/Home/Index` | GET | главная страница — «библиотека ассетов» (Razor) | **JWT** |
 | `/api/files` | GET | JSON-список файлов текущего пользователя: `id, fileName, fileSize, createdAt, previewUrl` (presigned 30 мин), `thumbnailUrl` (presigned 30 мин) | **JWT** |
@@ -89,7 +89,7 @@
 ## 4. Механизм аутентификации
 
 - **Не ASP.NET Identity.** Собственная схема в `Services/AccountService.cs`:
-  - пароль: `SHA-256(salt + password)`, соль — 16 байт (Base64). **Быстрое хеширование без растяжки** (нет PBKDF2/bcrypt/argon2) — см. TD-12.
+  - пароль: `SHA-256(password + соль)` (`PasswordService.HashPassword`: одна итерация SHA-256 по UTF-8(`password + salt`), результат Base64), соль — 16 байт (Base64). **Быстрое хеширование без растяжки** (нет PBKDF2/bcrypt/argon2), без ASP.NET Identity — см. TD-12.
   - JWT HS256 (HMAC), секрет `JWT_Secret` (env; в `.env.example` — дефолтный dev-секрет), срок **60 минут**, единственная полезная claim — `ClaimTypes.Name` (= логин, `unique_name`). **Нет** roles, refresh-токенов, issuer/audience не валидируются (`ValidateIssuer=false`, `ValidateAudience=false`), проверяются только срок и подпись.
 - Токен отдаётся **в httpOnly-cookie `jwt`** (`Secure`, path `/`). Браузерный клиент (`wwwroot/js/auth-logic.js`) использует `fetch` + `credentials: 'same-origin'`, localStorage не использует.
 - Сервер также принимает стандартный заголовок `Authorization: Bearer` (дефолт JwtBearer).
@@ -438,7 +438,7 @@ Opaque-токен (32 байта, base64url), в БД — только SHA-256 �
 ### 15.4 Компоновка
 
 - `auth-db` (PostgreSQL 15, свой volume `auth-db-data`, пароль — `AUTH_DB_PASSWORD` из env) → one-shot `auth-initdb` (пользователь/БД) → one-shot `auth-migrate` (миграции + seed роли `User`) → `auth`. Сервис **не** мигрирует при старте (AGENTS.md §5).
-- Auth **без опубликованных портов** в main/dev/prod (проверка `check-prod-stack.sh` §2b); прямой порт — только e2e-стенд (`E2E_AUTH_PORT`, дефолт 18095). Gateway-маршрут `/api/auth/**` → Auth — **4.2**.
+- Auth **без опубликованных портов** ни в одном стеке (проверка `check-prod-stack.sh` §2b; ранее e2e-стенд открывал прямой порт `E2E_AUTH_PORT` — с 4.3b стенд ходит через Gateway). Gateway-маршруты `/api/auth/**` и `/api/me` → Auth — **4.3b** (§19).
 - Compose: `auth-keygen`/`auth-migrate`/`auth` + `auth-db` + volume `auth-keys` (в `infra/compose.yml`).
 
 ### 15.5 Тесты (стратегия — ADR 0018 §4: compose-стенд, без Testcontainers)
@@ -580,3 +580,56 @@ legacy-`user_id` в БД — строки.
 включая race), frontend: `gen:api` + `gen:api:check` + lint + 127 unit +
 build, `make e2e` (32 passed + 2 skipped), `make e2e-https` (34 passed),
 `make check-prod` (PASS).
+
+## 19. Gateway маршрутизирует `/api/auth/**` и `/api/me` в Auth (шаг 4.3b, 2026-12-01, ADR 0011 §6.3, ADR 0018 §13)
+
+### 19.1 Что изменилось
+
+- **Маршруты Gateway** (`services/gateway/Program.cs`): новый кластер
+  `Upstream:Auth` (обязателен при старте, fail-fast), `/api/auth/**` и
+  точный `/api/me` → Auth (order 0), остальные `/api/**` → монолит
+  (order 1); `/api/me*`-lookalike остаётся на монолите. Старый
+  `AuthApiController` монолита снаружи недостижим (в коде до 4.3c).
+- **Refresh-лимит** (`AuthRateLimitMiddleware`): `POST /api/auth/refresh`
+  в том же слайдинг-окне, но со своим лимитом —
+  `RATE_LIMIT_REFRESH_REQUESTS_PER_MINUTE` (дефолт **30**/60 с на
+  клиента); login/register — по-прежнему 10/60 с.
+- **Test-only короткий токен** (Auth): `JwtOptions.ExpirySeconds`
+  (`Jwt__ExpirySeconds` / env `AUTH_JWT_EXPIRY_SECONDS`) — при > 0
+  переопределяет `ExpiryMinutes`; в normal/production пус.
+- **E2E-стенд** `infra/compose.e2e.yml` больше не публикует Auth (ранее
+  `E2E_AUTH_PORT`, дефолт 18095) — только через Gateway; монолит
+  публикуется для upload-limit-теста без Gateway (`E2E_WEB_PORT`).
+- **`make e2e-short`**: одноразовый стенд `3dpaint-e2e-short`
+  (`172.31.0.0/16`, порты 18092/19002/18890/18084, dev-порты
+  18102/18103) с `AUTH_JWT_EXPIRY_SECONDS=5` и
+  `JWT_CLOCK_SKEW_SECONDS=0`; гоняет только `short-token.spec.ts`
+  (`playwright.short.config.ts`), основной прогон её игнорирует.
+- **E2E**: `gateway-auth.spec.ts` (полный цикл через Gateway: register →
+  library → upload → viewer → logout → `/api/me` 401 → login again; +
+  lockout: 5 неверных паролей → идентичные 401 (кроме per-request
+  `traceId`), верный пароль во время lockout → тот же 401);
+  `session.spec.ts` (refresh без `rt` → 401 от Auth через Gateway, без
+  петли редиректов); `auth.spec.ts` (дубликат логина — текст Auth
+  «Логин уже занят»). IDOR с GUID-`sub` покрывался ещё в
+  `library.spec.ts`.
+
+### 19.2 Последствия для локальной среды
+
+- Локальные dev-аккаунты монолита (34 в `"Users"`) через Gateway не
+  логинятся (Auth их не знает; пароли не переносятся — решение 4.3).
+- 24 файла в `"UserFiles"` с числовыми строковыми `user_id`
+  (`'1'`…`'34'`) осиротели (GUID-`sub` никогда не совпадёт); в 4.3b не
+  удалялись — чистка только в 4.3c с отдельным подтверждением.
+- Rollback-проверен (живьём на теге `pre-auth-switch`): старый
+  monolith-auth (HS256) снова работает через Gateway; после отката
+  стенд снят.
+
+### 19.3 Валидация
+
+Gateway-тесты 72/72; `make e2e` 34 passed; `make e2e-short` 1 passed;
+`make test` / `make test-auth` / `make e2e-https` / `make check-prod` —
+см. отчёт шага 4.3b. Live-смоук через Gateway: register/login →
+`Set-Cookie` `jwt` (`Path=/`, Lax) и `rt` (`Path=/api/auth`, Strict),
+`/api/me` 200, legacy-аккаунт → 401, `/` и `/Account/Login` → 302
+`/spa/`, `/swagger` → 404.

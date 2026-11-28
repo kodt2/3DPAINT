@@ -19,6 +19,9 @@ services:
       # nginx build by default; the `dev` profile (make up-dev) switches it
       # to the Vite dev server for HMR.
       - Upstream__Frontend=${FRONTEND_UPSTREAM:-http://frontend:80}
+      # The Auth Service (step 4.3b): /api/auth/** and /api/me are routed here
+      # (own cluster); every other /api/** path stays on the monolith.
+      - Upstream__Auth=http://auth:8080
       - MaxUploadBytes=${MAX_UPLOAD_BYTES:-104857600}
       # The host port the gateway is published on: the default allowed Origin
       # for the CSRF check is http://localhost:{WEB_PORT} (ADR 0011).
@@ -32,6 +35,9 @@ services:
       # default 10 requests per 60 seconds. Raise for the test stand if needed;
       # the defaults are intentionally conservative.
       - RATE_LIMIT_REQUESTS_PER_MINUTE=${RATE_LIMIT_REQUESTS_PER_MINUTE:-}
+      # Refresh rate limit (step 4.3b, ADR 0011 §6.2): separate, higher default
+      # (30/min) because the SPA fires refresh automatically on token expiry.
+      - RATE_LIMIT_REFRESH_REQUESTS_PER_MINUTE=${RATE_LIMIT_REFRESH_REQUESTS_PER_MINUTE:-}
       - RATE_LIMIT_WINDOW_SECONDS=${RATE_LIMIT_WINDOW_SECONDS:-}
       # Trusted proxies (comma-separated IPs) / networks (comma-separated CIDRs)
       # allowed to identify the real client via X-Forwarded-For. Empty by
@@ -41,6 +47,7 @@ services:
     depends_on:
       - web
       - frontend
+      - auth
     restart: unless-stopped
     networks:
       - app-network
@@ -304,6 +311,10 @@ services:
       Jwt__Issuer: ${AUTH_JWT_ISSUER:-3dpaint.auth}
       Jwt__Audience: ${AUTH_JWT_AUDIENCE:-3dpaint}
       Jwt__ExpiryMinutes: ${AUTH_JWT_EXPIRY_MINUTES:-15}
+      # Optional seconds override (test-only, step 4.3b): the e2e short-token
+      # stand sets it to 5 to exercise the SPA refresh flow (empty = the
+      # minutes value above applies).
+      Jwt__ExpirySeconds: ${AUTH_JWT_EXPIRY_SECONDS:-}
       Jwt__CurrentKeyFile: /keys/current.pem
       Jwt__PreviousKeyFile: /keys/previous.pem
     volumes:

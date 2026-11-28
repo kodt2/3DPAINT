@@ -52,6 +52,26 @@ COMPOSE_E2E := WEB_PORT=$(E2E_PORT) S3_PUBLIC_PORT=$(E2E_S3_PORT) \
     $(COMPOSE) -p 3dpaint-e2e -f infra/compose.e2e.yml
 E2E_DOWN := $(COMPOSE) -p 3dpaint-e2e down --volumes --remove-orphans
 
+# Short-token e2e stand (step 4.3b): the same throwaway stack, but Auth
+# issues 5-second access tokens (AUTH_JWT_EXPIRY_SECONDS=5) and the monolith
+# validates with a zero clock skew (JWT_CLOCK_SKEW_SECONDS=0), so the
+# SPA's refresh-on-401 flow is exercised for real. Own project and ports so
+# it can run alongside `make e2e`. Only the short-token spec runs there
+# (playwright.short.config.ts).
+E2E_SHORT_PORT ?= 18092
+E2E_SHORT_S3_PORT ?= 19002
+E2E_SHORT_FILER_PORT ?= 18890
+E2E_SHORT_WEB_PORT ?= 18084
+COMPOSE_E2E_SHORT := WEB_PORT=$(E2E_SHORT_PORT) S3_PUBLIC_PORT=$(E2E_SHORT_S3_PORT) \
+    S3_FILER_PORT=$(E2E_SHORT_FILER_PORT) \
+    RATE_LIMIT_REQUESTS_PER_MINUTE=100 MAX_UPLOAD_BYTES=$(E2E_MAX_UPLOAD_BYTES) \
+    APP_NETWORK_SUBNET=172.31.0.0/16 \
+    WEB_DEV_PORT=18102 AUTH_DEV_PORT=18103 \
+    AUTH_JWT_EXPIRY_SECONDS=5 JWT_CLOCK_SKEW_SECONDS=0 \
+    E2E_WEB_PORT=$(E2E_SHORT_WEB_PORT) \
+    $(COMPOSE) -p 3dpaint-e2e-short -f infra/compose.e2e.yml
+E2E_SHORT_DOWN := $(COMPOSE) -p 3dpaint-e2e-short down --volumes --remove-orphans
+
 # HTTPS E2E stand (step H): the same full suite, but the browser talks to
 # Caddy (internal CA) over https: the site on E2E_HTTPS_PORT and the S3
 # presigned endpoint on E2E_S3_HTTPS_PORT (both via Caddy, own project and
@@ -80,7 +100,7 @@ COMPOSE_E2E_HTTPS := \
     $(COMPOSE) -p 3dpaint-e2e-https -f infra/compose.e2e.yml -f infra/compose.https.yml --profile https
 E2E_HTTPS_DOWN := $(COMPOSE) -p 3dpaint-e2e-https -f infra/compose.e2e.yml -f infra/compose.https.yml --profile https down --volumes --remove-orphans
 
-.PHONY: up up-dev down logs build test test-auth e2e e2e-https up-https down-https check-prod
+.PHONY: up up-dev down logs build test test-auth test-monolith e2e e2e-short e2e-https up-https down-https check-prod
 
 up: ## Build (if needed) and start the full stack
 	$(COMPOSE) up -d --build
@@ -155,6 +175,25 @@ e2e: ## Run Playwright against a throwaway stack (own ports, raised rate limit)
 	@status=0; \
 	(cd frontend && E2E_BASE_URL=http://localhost:$(E2E_PORT) S3_FILER_PORT=$(E2E_S3_PORT) E2E_MONOLITH_URL=http://127.0.0.1:$(E2E_WEB_PORT) npx playwright test) || status=$$?; \
 	$(E2E_DOWN); \
+	exit $$status
+
+e2e-short: ## Run the short-token spec against a throwaway stand (5s access tokens, zero clock skew)
+	-@$(E2E_SHORT_DOWN) >/dev/null 2>&1
+	@echo "Starting the short-token e2e stand (gateway http://localhost:$(E2E_SHORT_PORT))..."
+	@$(COMPOSE_E2E_SHORT) up -d --build
+	@echo "Waiting for the short-token e2e stand to become ready..."
+	@ready=0; \
+	for i in $$(seq 1 120); do \
+		if curl -fsS http://127.0.0.1:$(E2E_SHORT_PORT)/health/ready >/dev/null 2>&1; then ready=1; break; fi; \
+		sleep 2; \
+	done; \
+	if [ "$$ready" != "1" ]; then \
+		echo "error: short-token e2e stand did not become ready in time" >&2; \
+		exit 1; \
+	fi
+	@status=0; \
+	(cd frontend && E2E_BASE_URL=http://localhost:$(E2E_SHORT_PORT) npx playwright test -c playwright.short.config.ts) || status=$$?; \
+	$(E2E_SHORT_DOWN); \
 	exit $$status
 
 e2e-https: ## Run the full Playwright suite against the HTTPS stand (Caddy, internal CA)
