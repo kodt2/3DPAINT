@@ -65,7 +65,7 @@
 |---|---|---|---|
 | `/` | GET | редирект на `/Account/Auth` | публичный |
 | `/Account/Auth` | GET | страница логина/регистрации (Razor) | публичный |
-| `/Account/Login` | POST | проверка пароля (SHA256(salt+password)), выдаёт JWT (60 мин) в httpOnly-cookie `jwt`; JSON `{success, message, redirectUrl:"/Home/Index"}` | публичный |
+| `/Account/Login` | POST | проверка пароля (SHA-256(password + соль), см. ниже), выдаёт JWT (60 мин) в httpOnly-cookie `jwt`; JSON `{success, message, redirectUrl:"/Home/Index"}` | публичный |
 | `/Account/Register` | POST | валидация (FluentValidation: FullName/BirthDate/Login/Password, Password≥6), создаёт `User`+`Person`; JSON `{success, message}` | публичный |
 | `/Home/Index` | GET | главная страница — «библиотека ассетов» (Razor) | **JWT** |
 | `/api/files` | GET | JSON-список файлов текущего пользователя: `id, fileName, fileSize, createdAt, previewUrl` (presigned 30 мин), `thumbnailUrl` (presigned 30 мин) | **JWT** |
@@ -89,7 +89,7 @@
 ## 4. Механизм аутентификации
 
 - **Не ASP.NET Identity.** Собственная схема в `Services/AccountService.cs`:
-  - пароль: `SHA-256(salt + password)`, соль — 16 байт (Base64). **Быстрое хеширование без растяжки** (нет PBKDF2/bcrypt/argon2) — см. TD-12.
+  - пароль: `SHA-256(password + соль)` (`PasswordService.HashPassword`: одна итерация SHA-256 по UTF-8(`password + salt`), результат Base64), соль — 16 байт (Base64). **Быстрое хеширование без растяжки** (нет PBKDF2/bcrypt/argon2), без ASP.NET Identity — см. TD-12.
   - JWT HS256 (HMAC), секрет `JWT_Secret` (env; в `.env.example` — дефолтный dev-секрет), срок **60 минут**, единственная полезная claim — `ClaimTypes.Name` (= логин, `unique_name`). **Нет** roles, refresh-токенов, issuer/audience не валидируются (`ValidateIssuer=false`, `ValidateAudience=false`), проверяются только срок и подпись.
 - Токен отдаётся **в httpOnly-cookie `jwt`** (`Secure`, path `/`). Браузерный клиент (`wwwroot/js/auth-logic.js`) использует `fetch` + `credentials: 'same-origin'`, localStorage не использует.
 - Сервер также принимает стандартный заголовок `Authorization: Bearer` (дефолт JwtBearer).
